@@ -1,78 +1,58 @@
 package com.example.c1009692.shareblue;
 
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.support.v7.app.ActionBarActivity;
 import android.os.Bundle;
+import android.support.v4.app.Fragment;
+import android.support.v7.app.ActionBarActivity;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.widget.Toast;
+import android.widget.ArrayAdapter;
+import android.widget.ListView;
+
+import java.util.ArrayList;
 
 
-public class MainActivity extends ActionBarActivity {
+public class MainActivity extends ActionBarActivity implements ChatFragment.DeviceListener {
 
-    private BluetoothAdapter bluetoothAdapter;
-    public static final int REQUEST_ENABLE_BT = 1;
-    public static final int REQUEST_DISCOVERABLE_BT = 2;
-    private final BluetoothDiscoveryReceiver discoveryReceiver = new BluetoothDiscoveryReceiver();
+    ListView listView;
+    final ArrayList<String> devicesFound = new ArrayList<>();
+    ArrayAdapter<String> deviceAdapter;
+    private Fragment spotifyActivity;
+    private Fragment chatFragment;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-        if (bluetoothAdapter == null) {
-            Toast.makeText(this, "This device does not support Bluetooth!", Toast.LENGTH_LONG).show();
-            finish();
+        spotifyActivity = getSupportFragmentManager().findFragmentByTag("spotify_fragment");
+        chatFragment = getSupportFragmentManager().findFragmentByTag("chat_fragment");
+        if (spotifyActivity == null) {
+            spotifyActivity = new SpotifyActivity();
+            getSupportFragmentManager().beginTransaction().add(spotifyActivity, "spotify_fragment").commit();
         }
-        if (!bluetoothAdapter.isEnabled()) {
-            Intent turnOnBluetooth = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            startActivityForResult(turnOnBluetooth, REQUEST_ENABLE_BT);
-            bluetoothAdapter.startDiscovery();
+       if (chatFragment == null) {
+           chatFragment= new ChatFragment();
+           getSupportFragmentManager().beginTransaction().add(R.id.chat_fragment, chatFragment, "chat_fragment").commit();
         }
-        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
-        registerReceiver(discoveryReceiver, filter);
 
-        Intent discoveryBluetooth = new Intent((BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE));
-        discoveryBluetooth.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 0);
-        startActivityForResult(discoveryBluetooth, REQUEST_DISCOVERABLE_BT);
+        // FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        //transaction.replace(R.id.chat_fragment, chatFragment);
+        //transaction.commit();
+
+        listView = (ListView) findViewById(R.id.listview);
+        deviceAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_list_item_1, devicesFound);
+        listView.setAdapter(deviceAdapter);
 
 
-    }
-
-    private class BluetoothDiscoveryReceiver extends BroadcastReceiver {
-
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            String action = intent.getAction();
-            if (BluetoothDevice.ACTION_FOUND.equals(action)) {
-                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                Log.d("Matthew Bluetooth", device.getName() + ": " + device.getAddress());
-            }
-        }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        unregisterReceiver(discoveryReceiver);
-    }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (resultCode == RESULT_OK) {
-            if (requestCode == REQUEST_ENABLE_BT) {
-                Toast.makeText(this, "Bluetooth successfully enabled", Toast.LENGTH_SHORT).show();
-            }
-            if (requestCode == REQUEST_DISCOVERABLE_BT) {
-                Toast.makeText(this, "Bluetooth discovery turned on", Toast.LENGTH_SHORT).show();
-            }
-        }
     }
 
     @Override
@@ -94,6 +74,21 @@ public class MainActivity extends ActionBarActivity {
             return true;
         }
 
+
+
         return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    public void onDeviceFound(BluetoothDevice device) {
+        deviceAdapter.add(device.getName() + ": " + device.getAddress());
+        deviceAdapter.notifyDataSetChanged();
+    }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+        spotifyActivity.onActivityResult(requestCode, resultCode, intent);
+        chatFragment.onActivityResult(requestCode, resultCode, intent);
+
     }
 }
