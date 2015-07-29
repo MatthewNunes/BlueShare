@@ -22,21 +22,19 @@
         </activity>
 
         <activity
-            android:name=".SpotifyActivity"
-            android:label="Spotify Activity"
-            android:exported="true">
-            <meta-data
-                android:name="android.support.PARENT_ACTIVITY"
-                android:value=".MainActivity" />
-        </activity>
-
-        <activity
             android:name="com.spotify.sdk.android.authentication.LoginActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <service
             android:name=".MyBluetoothService"
             android:exported="false" />
+        <receiver android:name=".ChatFragment$PairingRequest">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.PAIRING_REQUEST" />
+                <action android:name="android.bluetooth.device.action.PAIRING_CANCEL" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".ChatFragment$BluetoothDiscoveryReceiver"/>
     </application>
 
 </manifest>

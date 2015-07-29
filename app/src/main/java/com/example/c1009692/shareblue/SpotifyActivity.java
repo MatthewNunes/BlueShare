@@ -1,9 +1,11 @@
 package com.example.c1009692.shareblue;
 
+import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
 import android.util.Log;
+import android.widget.Toast;
 
 import com.spotify.sdk.android.authentication.AuthenticationClient;
 import com.spotify.sdk.android.authentication.AuthenticationRequest;
@@ -19,12 +21,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import kaaes.spotify.webapi.android.SpotifyApi;
 import kaaes.spotify.webapi.android.SpotifyService;
 import kaaes.spotify.webapi.android.models.Pager;
 import kaaes.spotify.webapi.android.models.Playlist;
 import kaaes.spotify.webapi.android.models.PlaylistSimple;
+import kaaes.spotify.webapi.android.models.PlaylistTrack;
 import kaaes.spotify.webapi.android.models.SavedTrack;
 import kaaes.spotify.webapi.android.models.UserPrivate;
 import retrofit.Callback;
@@ -41,10 +45,14 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
 
     private static final int REQUEST_CODE = 1337;
     private PlaylistSimple playlist;
-    private Player myPlayer;
     private SpotifyService spotify;
-    private final String[] username = new String[1];
     public List<String> tracks;
+    final SpotifyUserData userData = new SpotifyUserData();
+    private SongListener callback;
+
+    public interface SongListener {
+        void onTracksAdded(List<String> tracks);
+    }
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -59,12 +67,25 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
     }
 
     @Override
+    public void onAttach(Activity activity) {
+        super.onAttach(activity);
+
+        // This makes sure that the container activity has implemented
+        // the callback interface. If not, it throws an exception
+        try {
+            callback = (SongListener) activity;
+        } catch (ClassCastException e) {
+            throw new ClassCastException(activity.toString()
+                    + " must implement OnHeadlineSelectedListener");
+        }
+    }
+
+    @Override
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
-        final SpotifyUserData userData = new SpotifyUserData();
+
         if (requestCode == REQUEST_CODE) {
             AuthenticationResponse response = AuthenticationClient.getResponse(resultCode, intent);
             if (response.getType() == AuthenticationResponse.Type.TOKEN) {
-                Config playerConfig = new Config(getActivity(), response.getAccessToken(), CLIENT_ID);
                 SpotifyApi api = new SpotifyApi();
                 api.setAccessToken(response.getAccessToken());
                 spotify = api.getService();
@@ -89,7 +110,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                                     Map<String, Object> playlistDetails = new HashMap<>();
                                     playlistDetails.put("name", "ShareBlue");
                                     playlistDetails.put("public", true);
-                                    spotify.createPlaylist(username[0], playlistDetails, new Callback<Playlist>() {
+                                    spotify.createPlaylist(userData.getUsername(), playlistDetails, new Callback<Playlist>() {
                                         @Override
                                         public void success(Playlist playlist, Response response) {
                                             Log.d("SpotifyFragment ", "Successfully created playlist: " + playlist.name);
@@ -123,14 +144,11 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                     @Override
                     public void success(Pager<SavedTrack> savedTrackPager, Response response) {
                         Log.d("SpotifyFragment", "Successfully got saved tracks");
+                        Random rand = new Random();
                         if (savedTrackPager.total > 0) {
-                            for (SavedTrack st : savedTrackPager.items) {
-                                tracks.add(st.track.id);
-                                Log.d("SpotifyFragment", "Track added: " + st.track.id);
-                                if (tracks.size() == 3) {
-                                    break;
-                                }
-                            }
+                            tracks.add(savedTrackPager.items.get(rand.nextInt(savedTrackPager.items.size())).track.id);
+                            Log.d("SpotifyFragment", "Track added: " + tracks.get(0));
+                            callback.onTracksAdded(tracks);
                         }
                     }
 
@@ -139,23 +157,26 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                         Log.d("SpotifyFragment ", "Error getting saved Tracks: " + error.toString());
                     }
                 });
-                /** Plays a song
-                 myPlayer = Spotify.getPlayer(playerConfig, this, new Player.InitializationObserver() {
-
-                @Override public void onInitialized(Player player) {
-                myPlayer.addConnectionStateCallback(SpotifyActivity.this);
-                myPlayer.addPlayerNotificationCallback(SpotifyActivity.this);
-                myPlayer.play("spotify:track:1HNkqx9Ahdgi1Ixy2xkKkL");
-                }
-
-                @Override public void onError(Throwable throwable) {
-                Log.e("SpotifyActivity", "Cound not intialise player: " + throwable.getMessage());
-                }
-                });
-                 */
 
             }
         }
+    }
+
+    public void addTracks(String tracksToAdd) {
+        Map<String, Object> queryParameters = new HashMap<>();
+        queryParameters.put("uris", tracksToAdd.trim());
+        queryParameters.put("position", 0);
+        spotify.addTracksToPlaylist(userData.getUsername(), playlist.id, queryParameters, new HashMap<String, Object>(), new Callback<Pager<PlaylistTrack>>() {
+            @Override
+            public void success(Pager<PlaylistTrack> playlistTrackPager, Response response) {
+                Log.d("SpotifyActivity", "Successfully Added Tracks to Playlist");
+            }
+
+            @Override
+            public void failure(RetrofitError error) {
+                Log.d("SpotifyActivity", "Failure Adding Tracks to Playlist: " + error.toString());
+            }
+        });
     }
 
     public List<String> getTracks() {
@@ -208,6 +229,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
     @Override
     public void onDestroy() {
         Spotify.destroyPlayer(this);
+        Log.d("SPOTIFY", "I get destroyed");
         super.onDestroy();
     }
 }

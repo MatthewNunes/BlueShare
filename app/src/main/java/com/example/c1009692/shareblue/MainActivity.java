@@ -5,16 +5,16 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
 import android.support.v7.app.ActionBarActivity;
-import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.ArrayAdapter;
 import android.widget.ListView;
 
 import java.util.ArrayList;
+import java.util.List;
 
 
-public class MainActivity extends ActionBarActivity implements ChatFragment.DeviceListener {
+public class MainActivity extends ActionBarActivity implements ChatFragment.DeviceListener, SpotifyActivity.SongListener {
 
     ListView listView;
     final ArrayList<String> devicesFound = new ArrayList<>();
@@ -42,7 +42,7 @@ public class MainActivity extends ActionBarActivity implements ChatFragment.Devi
         //transaction.commit();
 
         listView = (ListView) findViewById(R.id.listview);
-        deviceAdapter = new ArrayAdapter<String>(this,
+        deviceAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_list_item_1, devicesFound);
         listView.setAdapter(deviceAdapter);
 
@@ -86,9 +86,23 @@ public class MainActivity extends ActionBarActivity implements ChatFragment.Devi
     }
 
     @Override
+    public void onDataReceived(String dataReceived) {
+        ((SpotifyActivity) spotifyActivity).addTracks(dataReceived);
+    }
+
+    @Override
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
         spotifyActivity.onActivityResult(requestCode, resultCode, intent);
         chatFragment.onActivityResult(requestCode, resultCode, intent);
 
+    }
+
+    @Override
+    public void onTracksAdded(List<String> tracks) {
+        StringBuffer tracksString = new StringBuffer();
+        for (String track : tracks) {
+            tracksString.append("spotify:track:" + track);
+        }
+        ((ChatFragment) chatFragment).setTracks(tracksString.toString());
     }
 }

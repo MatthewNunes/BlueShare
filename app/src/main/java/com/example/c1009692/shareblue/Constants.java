@@ -10,6 +10,7 @@ public interface Constants {
     public static final int MESSAGE_WRITE = 4;
     public static final int STATE_CONNECTED = 5;
     public static final int MESSAGE_RECEIVED = 6;
+    public static final int MESSAGE_SEND = 7;
 
 
 }

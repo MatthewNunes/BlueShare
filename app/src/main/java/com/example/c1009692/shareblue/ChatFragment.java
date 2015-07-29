@@ -1,5 +1,6 @@
 package com.example.c1009692.shareblue;
 
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -9,9 +10,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
+import android.os.Process;
+import android.os.SystemClock;
 import android.support.v4.app.Fragment;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -30,9 +35,10 @@ import java.io.UnsupportedEncodingException;
 import java.lang.ref.WeakReference;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.UUID;
 
 /**
@@ -41,8 +47,9 @@ import java.util.UUID;
 public class ChatFragment extends Fragment {
 
     static Handler myHandler;
-    private final BluetoothDiscoveryReceiver discoveryReceiver = new BluetoothDiscoveryReceiver();
-    Map<String, String> devices = new HashMap<>();
+    public final BluetoothDiscoveryReceiver discoveryReceiver = new BluetoothDiscoveryReceiver();
+    private final PairingRequest pairingRequest = new PairingRequest();
+    Map<String, String> devices = new LinkedHashMap<>();
     protected static final String APP_UUID = "84b624f0-2afd-11e5-b345-feff819cdc9f";
     protected static final String SERVICE_NAME = "BlueShare";
     List<BluetoothDevice> bluetoothDevices = new ArrayList<>();
@@ -50,11 +57,23 @@ public class ChatFragment extends Fragment {
     private DeviceListener callback;
     private EditText editText;
     private ArrayAdapter<String> conversationAdapter;
-    private BluetoothSocket bSocket;
     public static boolean CLIENT_STARTED = false;
+    public static boolean runOnce = false;
+    private String tracks;
+    List<String> blacklistedDevices = new ArrayList<>();
+    private final String CLOSE_CLIENT_ACTION = "com.example.c1009692.shareblue.ChatFragment.CLOSE_CLIENT";
+    Thread runningThread;
+    ReceiveDataThread readThread;
+    SendDataThread writeThread;
+    ServerThread serverThread;
+    Thread attemptConnectionThread;
+    Runnable attemptConnectionRunnable;
+    public static boolean SENDING = false;
+    public static boolean RECEIVING = false;
 
     public interface DeviceListener {
-         void onDeviceFound(BluetoothDevice device);
+        void onDeviceFound(BluetoothDevice device);
+        void onDataReceived(String dataReceived);
     }
 
 
@@ -74,13 +93,33 @@ public class ChatFragment extends Fragment {
                 //MainActivity target = mTarget.get();
                 //Toast.makeText(target.getApplicationContext(), "Connected", Toast.LENGTH_LONG).show();
                 ChatFragment myFragment = mTarget.get();
+                Log.d("ChatFragment", "Preparing to receive a message");
                 myFragment.startReceiveThread(bluetoothSocket);
 
+            }
+            else if (message.what == Constants.MESSAGE_SEND) {
+                BluetoothSocket bluetoothSocket = (BluetoothSocket) message.obj;
+                //MainActivity target = mTarget.get();
+                //Toast.makeText(target.getApplicationContext(), "Connected", Toast.LENGTH_LONG).show();
+                ChatFragment myFragment = mTarget.get();
+                Log.d("ChatFragment", "Preparing to send a message");
+                myFragment.startSendThread(bluetoothSocket);
             }
             else if (message.what == Constants.MESSAGE_RECEIVED) {
                 byte[] msg = (byte[])message.obj;
                 ChatFragment myFragment = mTarget.get();
                 myFragment.updateAdapter(msg);
+                if (myFragment.serverThread != null) {
+                    myFragment.serverThread.cancel();
+                    myFragment.serverThread.run();
+                }
+                /** Needs to be moved to send data part
+                if (myFragment.CLIENT_STARTED == true) {
+                    mTarget.get().discoveryReceiver.addToBlacklist();
+                    mTarget.get().closeReceiveThread();
+                    mTarget.get().discoveryReceiver.disconnect();
+                }
+                */
             }
 
         }
@@ -101,13 +140,32 @@ public class ChatFragment extends Fragment {
     }
 
     public void startReceiveThread(BluetoothSocket socket) {
-        ReceiveDataThread readThread = new ReceiveDataThread(socket);
+        readThread = new ReceiveDataThread(socket);
         readThread.start();
+    }
+
+    public void startSendThread(BluetoothSocket socket) {
+        byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
+        writeThread = new SendDataThread(socket, b);
+        writeThread.start();
+    }
+
+    public void closeReceiveThread() {
+        if (readThread != null) {
+            readThread.cancel();
+            try {
+                readThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     public void updateAdapter(byte[] msg) {
         try {
-            conversationAdapter.add(new String(msg, "UTF-8"));
+            String dataReceived = new String(msg, "UTF-8");
+            callback.onDataReceived(dataReceived);
+            conversationAdapter.add(dataReceived);
             conversationAdapter.notifyDataSetChanged();
         } catch (UnsupportedEncodingException e) {
             e.printStackTrace();
@@ -128,10 +186,31 @@ public class ChatFragment extends Fragment {
         ListView conversationView = (ListView) getActivity().findViewById(R.id.in);
         conversationView.setAdapter(conversationAdapter);
         IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
-        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+        IntentFilter action_disc_filter = new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+        IntentFilter action_disconnected = new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+        //IntentFilter action_connected = new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED);
+        IntentFilter close_client = new IntentFilter(CLOSE_CLIENT_ACTION);
         getActivity().registerReceiver(discoveryReceiver, filter);
+        getActivity().registerReceiver(discoveryReceiver, action_disc_filter);
+        getActivity().registerReceiver(discoveryReceiver, action_disconnected);
+        //getActivity().registerReceiver(discoveryReceiver, action_connected);
+        getActivity().registerReceiver(discoveryReceiver, close_client);
+
+        IntentFilter filter2 = new IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST);
+
+
+        /*
+         * Registering a new BTBroadcast receiver from the Main Activity context
+         * with pairing request event
+         */
+        getActivity().registerReceiver(pairingRequest, filter2);
         myHandler = new mHandler(this);
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        attemptConnectionRunnable = new Runnable() {
+            public void run() {
+                discoveryReceiver.disconnect();
+            }
+        };
         if (bluetoothAdapter == null) {
             Toast.makeText(getActivity(), "This device does not support Bluetooth!", Toast.LENGTH_LONG).show();
             getActivity().finish();
@@ -140,10 +219,10 @@ public class ChatFragment extends Fragment {
             Intent turnOnBluetooth = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
             //turnOnBluetooth.addCategory(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
             //turnOnBluetooth.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 0);
-            startActivityForResult(turnOnBluetooth, Constants.REQUEST_ENABLE_BT);
+            getActivity().startActivityForResult(turnOnBluetooth, Constants.REQUEST_ENABLE_BT);
             Intent discoverBluetooth = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
             discoverBluetooth.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 0);
-            startActivity(discoverBluetooth);
+            getActivity().startActivityForResult(discoverBluetooth, Constants.REQUEST_DISCOVERABLE_BT);
         }
 
     }
@@ -157,9 +236,9 @@ public class ChatFragment extends Fragment {
             @Override
             public void onClick(View view) {
                 Toast.makeText(view.getContext(), "works", Toast.LENGTH_LONG).show();
-                byte[] b = editText.getText().toString().getBytes(Charset.forName("UTF-8"));
-                SendDataThread sendDataThread = new SendDataThread(bSocket, b);
-                sendDataThread.start();
+                byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
+                //SendDataThread sendDataThread = new SendDataThread(bSocket, b);
+                //sendDataThread.start();
             }
         });
         return view;
@@ -167,28 +246,101 @@ public class ChatFragment extends Fragment {
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (resultCode == Activity.RESULT_OK) {
-            if (requestCode == Constants.REQUEST_ENABLE_BT) {
-                boolean started = bluetoothAdapter.startDiscovery();
-                if (started) {
-                    //ServerThread serverThread = new ServerThread();
-                    //serverThread.start();
-                } else {
+        if (!runOnce) {
+            if (resultCode == Activity.RESULT_OK) {
+                //TODO need to fix 1337 thing
+                if ((requestCode == Constants.REQUEST_ENABLE_BT) || (requestCode == 1337)) {
+                    boolean started = bluetoothAdapter.startDiscovery();
+                    if (started) {
+                        runThread();
+                        runOnce = true;
+                        //ServerThread serverThread = new ServerThread();
+                        //s                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            erverThread.start();
+                    } else {
+                    }
+                }
+                if (requestCode == Constants.REQUEST_DISCOVERABLE_BT) {
                 }
             }
-            if (requestCode == Constants.REQUEST_DISCOVERABLE_BT) {
+
+        }
+    }
+
+    public void runThread() {
+        if (runningThread != null) {
+            try {
+                runningThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
         }
+        repeatRunning();
+    }
+
+    public void repeatRunning() {
+
+        new Thread() {
+            public void run() {
+                serverThread = new ServerThread();
+                serverThread.start();
+                while (true) {
+                    Log.d("ChatFragment", "MAINTHREAD: " + (Looper.myLooper() == Looper.getMainLooper()) + "");
+                    Random rand = new Random();
+                    int timeToRun = rand.nextInt(15) + 30;
+                    Log.d("ChatFragment", "Server Started for " + timeToRun + " seconds");
+                    long t1 = SystemClock.elapsedRealtime() / 1000;
+                    boolean started = bluetoothAdapter.startDiscovery();
+                    try {
+                        Thread.sleep(timeToRun * 1000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    while (RECEIVING);
+
+                    CLIENT_STARTED = true;
+                    bluetoothAdapter.cancelDiscovery();
+                    attemptConnectionThread = new Thread(attemptConnectionRunnable);
+                    attemptConnectionThread.start();
+                    Log.d("ChatFragment", "Client Started for " + timeToRun + " seconds");
+                    try {
+                        Thread.sleep(timeToRun * 1000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    while(SENDING);
+                    CLIENT_STARTED = false;
+                    try {
+                        attemptConnectionThread.join();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    discoveryReceiver.disconnect();
+                    bluetoothAdapter.startDiscovery();
+
+
+                }
+                //runThread();
+
+
+
+            }
+        }.start();
+    }
+
+
+    public void setTracks(String tracks) {
+        this.tracks = "spotify:track:1dwFFQosridepD2MiCRL6Y";
     }
 
     private class ServerThread extends Thread {
         private final BluetoothServerSocket bluetoothServerSocket;
 
 
+
         public ServerThread() {
             BluetoothServerSocket tmp = null;
             try {
-                tmp = bluetoothAdapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, UUID.fromString(APP_UUID));
+                tmp = bluetoothAdapter.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, UUID.fromString(APP_UUID));
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -196,19 +348,22 @@ public class ChatFragment extends Fragment {
         }
 
         public void run() {
-            bluetoothAdapter.cancelDiscovery();
-            bSocket = null;
+            BluetoothSocket serverSocket = null;
 
             while (true) {
                 try {
-                    bSocket = bluetoothServerSocket.accept();
+                    serverSocket = bluetoothServerSocket.accept();
                 } catch (IOException e) {
                     e.printStackTrace();
                     break;
+                } catch (NullPointerException ne) {
+                    ne.printStackTrace();
+                    break;
                 }
 
-                if (bSocket != null) {
-                    myHandler.obtainMessage(Constants.MESSAGE_READ, bSocket).sendToTarget();
+                Log.d("ChatFragment", "I get close to receiving a message");
+                if (serverSocket != null) {
+                    myHandler.obtainMessage(Constants.MESSAGE_READ, serverSocket).sendToTarget();
                     try {
                         bluetoothServerSocket.close();
                     } catch (IOException e) {
@@ -230,68 +385,186 @@ public class ChatFragment extends Fragment {
 
     private class ClientThread extends Thread {
         private final BluetoothDevice bDevice;
+        private final BluetoothSocket clientSocket;
 
         public ClientThread(BluetoothDevice bbDevice) {
             BluetoothSocket tmp = null;
             bDevice = bbDevice;
 
             try {
-                tmp = bDevice.createRfcommSocketToServiceRecord(UUID.fromString(APP_UUID));
+                tmp = bDevice.createInsecureRfcommSocketToServiceRecord(UUID.fromString(APP_UUID));
+                Log.d("ChatFragment", "CLIENT THREAD: I connected");
             } catch (IOException e) {
                 e.printStackTrace();
+                Log.d("ChatFragment", "CLIENT THREAD: I didn't connect");
             }
-            bSocket = tmp;
+            clientSocket = tmp;
         }
 
         public void run() {
             bluetoothAdapter.cancelDiscovery();
             try {
-                bSocket.connect();
+                clientSocket.connect();
+                SENDING = true;
+                myHandler.obtainMessage(Constants.MESSAGE_SEND, clientSocket).sendToTarget();
             } catch (IOException e) {
+                Log.d("ChatFragment", "I hit exception connecting");
                 e.printStackTrace();
-                try {
-                    bSocket.close();
-                } catch (IOException e1) {
-                    e1.printStackTrace();
-                    return;
+                SENDING = false;
+                if (clientSocket != null) {
+                    try {
+                        clientSocket.close();
+                        SENDING = false;
+                    } catch (IOException e1) {
+                        e1.printStackTrace();
+                        SENDING = false;
+                    }
                 }
             }
-            myHandler.obtainMessage(Constants.MESSAGE_READ, bSocket).sendToTarget();
+            //myHandler.obtainMessage(Constants.MESSAGE_READ, bSocket).sendToTarget();
         }
 
         public void cancel() {
             try {
-                bSocket.close();
+                if (clientSocket != null) {
+                    clientSocket.close();
+                }
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
     }
 
-    private class BluetoothDiscoveryReceiver extends BroadcastReceiver {
-
+    public class BluetoothDiscoveryReceiver extends BroadcastReceiver {
+        ClientThread clientThread;
+        SendDataThread sendDataThread;
+        BluetoothDevice currentDevice;
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
             if (BluetoothDevice.ACTION_FOUND.equals(action)) {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                bluetoothDevices.add(device);
-                if ((device.getName() != null) && (device.getName().equals("MatthewsPhone"))) {
-                    Thread clientThread = new ClientThread(device);
-                    clientThread.start();
-                    ChatFragment.CLIENT_STARTED = true;
-                }
-                if (!devices.containsKey(device.getName())) {
+                if ((!blacklistedDevices.contains(device.getAddress())) && (!devices.containsKey(device.getName()))) {
+                    //if (("MatthewsPhone").equals(device.getName())) {
+                    bluetoothDevices.add(device);
                     devices.put(device.getName(), device.getAddress());
                     callback.onDeviceFound(device);
-
+                    //}
                 }
+
 
             }
             else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
-                Log.d("Matthew App", "Finished Discovery");
-                if (!ChatFragment.CLIENT_STARTED) {
+                Log.d("ChatFragment", "Finished Discovery");
+                if (!CLIENT_STARTED) {
                     bluetoothAdapter.startDiscovery();
+                }
+            }
+            else if(BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
+                if ((currentDevice != null) && (blacklistedDevices.size() > 0) && (blacklistedDevices.get(blacklistedDevices.size() -1).equals(currentDevice.getAddress()))) {
+                    blacklistedDevices.remove(blacklistedDevices.size() - 1);
+                    bluetoothDevices.add(0, currentDevice);
+                }
+                Log.d("ChatFragment", "Blacklisted Devices: " + blacklistedDevices.size());
+                Log.d("ChatFragment", "Bluetooth Devices: " + bluetoothDevices.size());
+                disconnect();
+            }
+            /**
+            else if((BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) && (bSocket != null)) {
+                Log.d("ChatFragment", "Connected!");
+                //byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
+                //blacklisted device must be added a second time as it will be removed once when the connection terminates
+                //sendDataThread = new SendDataThread(bSocket, b);
+                //sendDataThread.start();
+            }
+            */
+            else if(CLOSE_CLIENT_ACTION.equals(action)) {
+                clientThread.cancel();
+                try {
+                    clientThread.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        public void disconnect() {
+            if (!CLIENT_STARTED) {
+                if (clientThread != null) {
+                    try {
+                        clientThread.join();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (sendDataThread != null) {
+                    try {
+                        sendDataThread.join();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+            }
+            else {
+                if (sendDataThread != null) {
+                    sendDataThread.cancel();
+                    try {
+                        sendDataThread.join();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (clientThread != null) {
+                    clientThread.cancel();
+                    try {
+                        clientThread.join();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (bluetoothDevices.size() > 0) {
+                    currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
+                    bluetoothDevices.add(0, currentDevice);
+                    while (bluetoothAdapter.getName().compareToIgnoreCase(currentDevice.getName() + "") > 0 ) {
+                        currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
+                        bluetoothDevices.add(0, currentDevice);
+                    }
+                    Log.d("ChatFragment", "Trying to connect to " + currentDevice.getName());
+                    clientThread = new ClientThread(currentDevice);
+                    clientThread.start();
+                }
+            }
+        }
+
+        public void addToBlacklist() {
+            blacklistedDevices.add(currentDevice.getAddress());
+        }
+    }
+
+    public static class PairingRequest extends BroadcastReceiver {
+        public PairingRequest() {
+            super();
+        }
+
+        @TargetApi(Build.VERSION_CODES.KITKAT)
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent.getAction().equals("android.bluetooth.device.action.PAIRING_REQUEST")) {
+                try {
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    int pin=intent.getIntExtra("android.bluetooth.device.extra.PAIRING_KEY", 0);
+                    //the pin in case you need to accept for an specific pin
+                    Log.d("ChatFragment", "PIN: " + intent.getIntExtra("android.bluetooth.device.extra.PAIRING_KEY",0));
+                    //maybe you look for a name or address
+                    Log.d("ChatFragment", "Bonded: " + device.getName());
+                    byte[] pinBytes;
+                    pinBytes = (""+pin).getBytes("UTF-8");
+                    device.setPin(pinBytes);
+                    //setPairing confirmation if neeeded
+                    device.setPairingConfirmation(true);
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
             }
         }
@@ -300,26 +573,26 @@ public class ChatFragment extends Fragment {
     public class ReceiveDataThread extends Thread {
         private final BluetoothSocket mmSocket;
         private final InputStream mmInStream;
-        private final OutputStream mmOutStream;
 
         public ReceiveDataThread(BluetoothSocket socket) {
+            Log.d("ChatFragment", "Receive Data Thread called");
+            RECEIVING = true;
             mmSocket = socket;
             InputStream tmpIn = null;
-            OutputStream tmpOut = null;
 
             // Get the BluetoothSocket input and output streams
             try {
                 tmpIn = socket.getInputStream();
-                tmpOut = socket.getOutputStream();
-            } catch (IOException e) {
+            } catch (IOException | NullPointerException e) {
+                RECEIVING = false;
                 e.printStackTrace();
             }
             mmInStream = tmpIn;
-            mmOutStream = tmpOut;
         }
 
         public void run() {
-            byte[] buffer = new byte[1024];
+            Log.d("ChatFragment", "Run method within recive fragment called");
+            byte[] buffer = new byte[2048];
             int bytes;
 
             // Keep listening to the InputStream while connected
@@ -327,26 +600,18 @@ public class ChatFragment extends Fragment {
                 try {
                     // Read from the InputStream
                     bytes = mmInStream.read(buffer);
-
+                    Log.d("ChatFragment", "Got message");
                     // Send the obtained bytes to the UI Activity
                     myHandler.obtainMessage(Constants.MESSAGE_RECEIVED, bytes, -1, buffer)
                             .sendToTarget();
+                    RECEIVING = false;
                 } catch (IOException e) {
-
+                    RECEIVING = false;
+                    break;
+                } catch (NullPointerException ne) {
+                    RECEIVING = false;
                     break;
                 }
-            }
-        }
-
-        public void write(byte[] buffer) {
-            try {
-                mmOutStream.write(buffer);
-
-                // Share the sent message back to the UI Activity
-                myHandler.obtainMessage(Constants.MESSAGE_RECEIVED, -1, -1, buffer)
-                        .sendToTarget();
-            } catch (IOException e) {
-                e.printStackTrace();
             }
         }
 
@@ -365,6 +630,7 @@ public class ChatFragment extends Fragment {
         private byte[] buffer;
 
         public SendDataThread(BluetoothSocket socket, byte[] buff) {
+            SENDING = true;
             mmSocket = socket;
             OutputStream tmpOut = null;
             buffer = buff;
@@ -374,6 +640,7 @@ public class ChatFragment extends Fragment {
                 tmpOut = socket.getOutputStream();
             } catch (IOException e) {
                 e.printStackTrace();
+                SENDING = false;
             }
             mmOutStream = tmpOut;
         }
@@ -384,11 +651,12 @@ public class ChatFragment extends Fragment {
                 mmOutStream.write(buffer);
 
                 // Share the sent message back to the UI Activity
-                myHandler.obtainMessage(Constants.MESSAGE_RECEIVED, -1, -1, buffer)
-                        .sendToTarget();
-            } catch (IOException e) {
+                //myHandler.obtainMessage(Constants.MESSAGE_RECEIVED, -1, -1, buffer)
+                //        .sendToTarget();
+            } catch (IOException | NullPointerException e) {
                 e.printStackTrace();
             }
+            SENDING = false;
 
         }
 
@@ -404,8 +672,129 @@ public class ChatFragment extends Fragment {
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
         getActivity().unregisterReceiver(discoveryReceiver);
+        getActivity().unregisterReceiver(pairingRequest);
+        super.onDestroy();
+
+    }
+    //WEIRD STUFF STARTS HERE
+    /**
+    public static interface BluetoothSocketWrapper {
+
+        InputStream getInputStream() throws IOException;
+
+        OutputStream getOutputStream() throws IOException;
+
+        String getRemoteDeviceName();
+
+        void connect() throws IOException;
+
+        String getRemoteDeviceAddress();
+
+        void close() throws IOException;
+
+        BluetoothSocket getUnderlyingSocket();
+
     }
 
+
+    public static class NativeBluetoothSocket implements BluetoothSocketWrapper {
+
+        private BluetoothSocket socket;
+
+        public NativeBluetoothSocket(BluetoothSocket tmp) {
+            this.socket = tmp;
+        }
+
+        @Override
+        public InputStream getInputStream() throws IOException {
+            return socket.getInputStream();
+        }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            return socket.getOutputStream();
+        }
+
+        @Override
+        public String getRemoteDeviceName() {
+            return socket.getRemoteDevice().getName();
+        }
+
+        @Override
+        public void connect() throws IOException {
+            socket.connect();
+        }
+
+        @Override
+        public String getRemoteDeviceAddress() {
+            return socket.getRemoteDevice().getAddress();
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
+        }
+
+        @Override
+        public BluetoothSocket getUnderlyingSocket() {
+            return socket;
+        }
+
+    }
+
+    public class FallbackBluetoothSocket extends NativeBluetoothSocket {
+
+        private BluetoothSocket fallbackSocket;
+
+        public FallbackBluetoothSocket(BluetoothSocket tmp) throws FallbackException {
+            super(tmp);
+            try
+            {
+                Class<?> clazz = tmp.getRemoteDevice().getClass();
+                Class<?>[] paramTypes = new Class<?>[] {Integer.TYPE};
+                Method m = clazz.getMethod("createInsecureRfcommSocket", paramTypes);
+                Object[] params = new Object[] {Integer.valueOf(1)};
+                fallbackSocket = (BluetoothSocket) m.invoke(tmp.getRemoteDevice(), params);
+            }
+            catch (Exception e)
+            {
+                throw new FallbackException(e);
+            }
+        }
+
+        @Override
+        public InputStream getInputStream() throws IOException {
+            return fallbackSocket.getInputStream();
+        }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            return fallbackSocket.getOutputStream();
+        }
+
+
+        @Override
+        public void connect() throws IOException {
+            fallbackSocket.connect();
+        }
+
+
+        @Override
+        public void close() throws IOException {
+            fallbackSocket.close();
+        }
+
+    }
+
+    public static class FallbackException extends Exception {
+
+        private static final long serialVersionUID = 1L;
+
+        public FallbackException(Exception e) {
+            super(e);
+        }
+
+    }
+    */
 }
