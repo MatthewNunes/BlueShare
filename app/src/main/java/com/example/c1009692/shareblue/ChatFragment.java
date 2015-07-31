@@ -13,8 +13,10 @@ import android.content.IntentFilter;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
+import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.SystemClock;
 import android.support.v4.app.Fragment;
@@ -33,6 +35,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Field;
+import java.net.Socket;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -40,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Created by Matthew on 17/07/15.
@@ -68,9 +73,12 @@ public class ChatFragment extends Fragment {
     ServerThread serverThread;
     Thread attemptConnectionThread;
     Runnable attemptConnectionRunnable;
-    public static boolean SENDING = false;
+    public static AtomicBoolean SENDING = new AtomicBoolean(false);
     public static boolean RECEIVING = false;
-
+    public static AtomicBoolean SEND_REQUEST_FINISHED = new AtomicBoolean(true);
+    public static AtomicBoolean RUN_THREAD = new AtomicBoolean(true);
+    RunClientThread runClientThread;
+    MainThread mainThread;
     public interface DeviceListener {
         void onDeviceFound(BluetoothDevice device);
         void onDataReceived(String dataReceived);
@@ -109,10 +117,9 @@ public class ChatFragment extends Fragment {
                 byte[] msg = (byte[])message.obj;
                 ChatFragment myFragment = mTarget.get();
                 myFragment.updateAdapter(msg);
-                if (myFragment.serverThread != null) {
-                    myFragment.serverThread.cancel();
-                    myFragment.serverThread.run();
-                }
+                myFragment.closeReceiveThread();
+                myFragment.startServerThread();
+
                 /** Needs to be moved to send data part
                 if (myFragment.CLIENT_STARTED == true) {
                     mTarget.get().discoveryReceiver.addToBlacklist();
@@ -123,6 +130,90 @@ public class ChatFragment extends Fragment {
             }
 
         }
+    }
+
+    class MainThread extends HandlerThread {
+        private Handler theHandler;
+
+        public MainThread() {
+            super("MainThread", Process.THREAD_PRIORITY_BACKGROUND);
+        }
+
+        @Override
+        protected void onLooperPrepared() {
+            super.onLooperPrepared();
+
+            theHandler = new Handler(getLooper()) {
+                @Override
+                public void handleMessage(Message msg) {
+                    switch (msg.what) {
+                        case 1:
+                            startServerThread();
+                            while (true) {
+                                Log.d("ChatFragment", "MAINTHREAD: " + (Looper.myLooper() == Looper.getMainLooper()) + "");
+                                Random rand = new Random();
+                                int timeToRun = rand.nextInt(15) + 30;
+                                Log.d("ChatFragment", "Server Started for " + timeToRun + " seconds");
+                                boolean started = bluetoothAdapter.startDiscovery();
+                                try {
+                                    Thread.sleep(timeToRun * 1000);
+                                } catch (InterruptedException e) {
+                                    e.printStackTrace();
+                                }
+                                while (RECEIVING);
+                                RUN_THREAD.set(true);
+                                CLIENT_STARTED = true;
+                                bluetoothAdapter.cancelDiscovery();
+                                SEND_REQUEST_FINISHED.set(true);
+                                //attemptConnectionThread = new Thread(attemptConnectionRunnable);
+                                //attemptConnectionThread.start();
+                                runClientThread = new RunClientThread();
+                                Log.d("ChatFragment", "Client Started for " + timeToRun + " seconds");
+                                long t1 = SystemClock.elapsedRealtime() / 1000;
+                                runClientThread.start();
+                                while (((SystemClock.elapsedRealtime() / 1000) - t1) < timeToRun) {
+
+                                    if (!runClientThread.isAlive()) {
+                                        runClientThread.run();
+                                    }
+                                }
+                                Log.d("ChatFragment", "Just before while(SENDING)");
+                                while(SENDING.get());
+                                Log.d("ChatFragment", "After while(SENDING)");
+                                SEND_REQUEST_FINISHED.set(false);
+                                CLIENT_STARTED = false;
+                                RUN_THREAD.set(false);
+                                Log.d("ChatFragment", "Before joining");
+                                try {
+                                    runClientThread.join();
+                                } catch (InterruptedException e) {
+                                    e.printStackTrace();
+                                }
+                                Log.d("ChatFragment", "After joining");
+                                //attemptConnectionThread.join();
+                                bluetoothAdapter.startDiscovery();
+
+
+                            }
+                    }
+                }
+            };
+        }
+
+        public void runMainThread() {
+            theHandler.sendEmptyMessage(1);
+        }
+
+    }
+
+
+    private class RunClientThread extends Thread {
+
+        @Override
+        public void run() {
+            discoveryReceiver.disconnect();
+        }
+
     }
 
     @Override
@@ -150,6 +241,19 @@ public class ChatFragment extends Fragment {
         writeThread.start();
     }
 
+    public void startServerThread() {
+        if (serverThread != null) {
+            serverThread.cancel();
+            try {
+                serverThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        serverThread = new ServerThread();
+        serverThread.start();
+    }
+
     public void closeReceiveThread() {
         if (readThread != null) {
             readThread.cancel();
@@ -158,6 +262,41 @@ public class ChatFragment extends Fragment {
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
+        }
+    }
+
+    private synchronized void clearFileDescriptor(BluetoothSocket socket){
+        try{
+            Field field = BluetoothSocket.class.getDeclaredField("mPfd");
+            field.setAccessible(true);
+            ParcelFileDescriptor mPfd = (ParcelFileDescriptor)field.get(socket);
+            if(null == mPfd){
+                return;
+            }
+
+            mPfd.close();
+        }catch(Exception e){
+            Log.w("ChatFragment", "LocalSocket could not be cleanly closed.");
+        }
+    }
+
+    private synchronized void clearServerFileDescriptor(BluetoothServerSocket socket){
+        try{
+            Field mSocketFld = socket.getClass().getDeclaredField("mSocket");
+            mSocketFld.setAccessible(true);
+
+            BluetoothSocket btsock = (BluetoothSocket)mSocketFld.get(socket);
+
+            Field mPfdFld = btsock.getClass().getDeclaredField("mPfd");
+            mPfdFld.setAccessible(true);
+
+            ParcelFileDescriptor pfd = (ParcelFileDescriptor)mPfdFld.get(btsock);
+            if (null == pfd) {
+                return;
+            }
+            pfd.close();
+        }catch(Exception e){
+            Log.w("ChatFragment", "LocalSocket could not be cleanly closed.");
         }
     }
 
@@ -187,12 +326,12 @@ public class ChatFragment extends Fragment {
         conversationView.setAdapter(conversationAdapter);
         IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
         IntentFilter action_disc_filter = new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
-        IntentFilter action_disconnected = new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+        //IntentFilter action_disconnected = new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED);
         //IntentFilter action_connected = new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED);
         IntentFilter close_client = new IntentFilter(CLOSE_CLIENT_ACTION);
         getActivity().registerReceiver(discoveryReceiver, filter);
         getActivity().registerReceiver(discoveryReceiver, action_disc_filter);
-        getActivity().registerReceiver(discoveryReceiver, action_disconnected);
+        //getActivity().registerReceiver(discoveryReceiver, action_disconnected);
         //getActivity().registerReceiver(discoveryReceiver, action_connected);
         getActivity().registerReceiver(discoveryReceiver, close_client);
 
@@ -206,11 +345,22 @@ public class ChatFragment extends Fragment {
         getActivity().registerReceiver(pairingRequest, filter2);
         myHandler = new mHandler(this);
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        /**
         attemptConnectionRunnable = new Runnable() {
             public void run() {
-                discoveryReceiver.disconnect();
+                while(RUN_THREAD.get()) {
+                    if (SEND_REQUEST_FINISHED.get()) {
+                        discoveryReceiver.disconnect();
+                        SEND_REQUEST_FINISHED.set(false);
+                    }
+                }
+                Log.d("ChatFragment", "Thread gets out of while");
             }
         };
+        */
+        mainThread = new MainThread();
+        mainThread.start();
+
         if (bluetoothAdapter == null) {
             Toast.makeText(getActivity(), "This device does not support Bluetooth!", Toast.LENGTH_LONG).show();
             getActivity().finish();
@@ -252,7 +402,7 @@ public class ChatFragment extends Fragment {
                 if ((requestCode == Constants.REQUEST_ENABLE_BT) || (requestCode == 1337)) {
                     boolean started = bluetoothAdapter.startDiscovery();
                     if (started) {
-                        runThread();
+                        mainThread.runMainThread();
                         runOnce = true;
                         //ServerThread serverThread = new ServerThread();
                         //s                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            erverThread.start();
@@ -278,17 +428,16 @@ public class ChatFragment extends Fragment {
     }
 
     public void repeatRunning() {
-
+        //FRIDAY put this in a handler
         new Thread() {
+            @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR2)
             public void run() {
-                serverThread = new ServerThread();
-                serverThread.start();
+                startServerThread();
                 while (true) {
                     Log.d("ChatFragment", "MAINTHREAD: " + (Looper.myLooper() == Looper.getMainLooper()) + "");
                     Random rand = new Random();
                     int timeToRun = rand.nextInt(15) + 30;
                     Log.d("ChatFragment", "Server Started for " + timeToRun + " seconds");
-                    long t1 = SystemClock.elapsedRealtime() / 1000;
                     boolean started = bluetoothAdapter.startDiscovery();
                     try {
                         Thread.sleep(timeToRun * 1000);
@@ -296,25 +445,35 @@ public class ChatFragment extends Fragment {
                         e.printStackTrace();
                     }
                     while (RECEIVING);
-
+                    RUN_THREAD.set(true);
                     CLIENT_STARTED = true;
                     bluetoothAdapter.cancelDiscovery();
-                    attemptConnectionThread = new Thread(attemptConnectionRunnable);
-                    attemptConnectionThread.start();
+                    SEND_REQUEST_FINISHED.set(true);
+                    //attemptConnectionThread = new Thread(attemptConnectionRunnable);
+                    //attemptConnectionThread.start();
+                    runClientThread = new RunClientThread();
                     Log.d("ChatFragment", "Client Started for " + timeToRun + " seconds");
-                    try {
-                        Thread.sleep(timeToRun * 1000);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+                    long t1 = SystemClock.elapsedRealtime() / 1000;
+                    while (((SystemClock.elapsedRealtime() / 1000) - t1) < timeToRun) {
+                        runClientThread.start();
+                        if (!runClientThread.isAlive()) {
+                            runClientThread.run();
+                        }
                     }
-                    while(SENDING);
+                    Log.d("ChatFragment", "Just before while(SENDING)");
+                    while(SENDING.get());
+                    Log.d("ChatFragment", "After while(SENDING)");
+                    SEND_REQUEST_FINISHED.set(false);
                     CLIENT_STARTED = false;
+                    RUN_THREAD.set(false);
+                    Log.d("ChatFragment", "Before joining");
                     try {
-                        attemptConnectionThread.join();
+                        runClientThread.join();
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
-                    discoveryReceiver.disconnect();
+                    Log.d("ChatFragment", "After joining");
+                    //attemptConnectionThread.join();
                     bluetoothAdapter.startDiscovery();
 
 
@@ -329,7 +488,7 @@ public class ChatFragment extends Fragment {
 
 
     public void setTracks(String tracks) {
-        this.tracks = "spotify:track:1dwFFQosridepD2MiCRL6Y";
+        this.tracks = tracks;
     }
 
     private class ServerThread extends Thread {
@@ -376,6 +535,7 @@ public class ChatFragment extends Fragment {
 
         public void cancel() {
             try {
+                clearServerFileDescriptor(bluetoothServerSocket);
                 bluetoothServerSocket.close();
             } catch (IOException e) {
                 e.printStackTrace();
@@ -405,20 +565,16 @@ public class ChatFragment extends Fragment {
             bluetoothAdapter.cancelDiscovery();
             try {
                 clientSocket.connect();
-                SENDING = true;
+                SENDING.set(true);
                 myHandler.obtainMessage(Constants.MESSAGE_SEND, clientSocket).sendToTarget();
             } catch (IOException e) {
                 Log.d("ChatFragment", "I hit exception connecting");
                 e.printStackTrace();
-                SENDING = false;
+                SENDING.set(false);
+
                 if (clientSocket != null) {
-                    try {
-                        clientSocket.close();
-                        SENDING = false;
-                    } catch (IOException e1) {
-                        e1.printStackTrace();
-                        SENDING = false;
-                    }
+                    cancel();
+                    SEND_REQUEST_FINISHED.set(true);
                 }
             }
             //myHandler.obtainMessage(Constants.MESSAGE_READ, bSocket).sendToTarget();
@@ -427,6 +583,7 @@ public class ChatFragment extends Fragment {
         public void cancel() {
             try {
                 if (clientSocket != null) {
+                    clearFileDescriptor(clientSocket);
                     clientSocket.close();
                 }
             } catch (IOException e) {
@@ -460,15 +617,18 @@ public class ChatFragment extends Fragment {
                     bluetoothAdapter.startDiscovery();
                 }
             }
+            /**
             else if(BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
                 if ((currentDevice != null) && (blacklistedDevices.size() > 0) && (blacklistedDevices.get(blacklistedDevices.size() -1).equals(currentDevice.getAddress()))) {
                     blacklistedDevices.remove(blacklistedDevices.size() - 1);
                     bluetoothDevices.add(0, currentDevice);
                 }
+                SEND_REQUEST_FINISHED = true;
                 Log.d("ChatFragment", "Blacklisted Devices: " + blacklistedDevices.size());
                 Log.d("ChatFragment", "Bluetooth Devices: " + bluetoothDevices.size());
-                disconnect();
+                //disconnect();
             }
+             */
             /**
             else if((BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) && (bSocket != null)) {
                 Log.d("ChatFragment", "Connected!");
@@ -491,6 +651,7 @@ public class ChatFragment extends Fragment {
         public void disconnect() {
             if (!CLIENT_STARTED) {
                 if (clientThread != null) {
+                    clientThread.cancel();
                     try {
                         clientThread.join();
                     } catch (InterruptedException e) {
@@ -498,6 +659,7 @@ public class ChatFragment extends Fragment {
                     }
                 }
                 if (sendDataThread != null) {
+                    sendDataThread.cancel();
                     try {
                         sendDataThread.join();
                     } catch (InterruptedException e) {
@@ -525,14 +687,23 @@ public class ChatFragment extends Fragment {
                 }
                 if (bluetoothDevices.size() > 0) {
                     currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
-                    bluetoothDevices.add(0, currentDevice);
                     while (bluetoothAdapter.getName().compareToIgnoreCase(currentDevice.getName() + "") > 0 ) {
-                        currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
-                        bluetoothDevices.add(0, currentDevice);
+                        if (bluetoothDevices.size() > 0) {
+                            blacklistedDevices.add(currentDevice.getAddress());
+                            currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
+                        }
+                        else {
+                            currentDevice = null;
+                            break;
+                        }
                     }
-                    Log.d("ChatFragment", "Trying to connect to " + currentDevice.getName());
-                    clientThread = new ClientThread(currentDevice);
-                    clientThread.start();
+
+                    if (currentDevice != null) {
+                        bluetoothDevices.add(0, currentDevice);
+                        Log.d("ChatFragment", "Trying to connect to " + currentDevice.getName());
+                        clientThread = new ClientThread(currentDevice);
+                        clientThread.start();
+                    }
                 }
             }
         }
@@ -613,10 +784,12 @@ public class ChatFragment extends Fragment {
                     break;
                 }
             }
+            cancel();
         }
 
         public void cancel() {
             try {
+                clearFileDescriptor(mmSocket);
                 mmSocket.close();
             } catch (IOException e) {
                 e.printStackTrace();
@@ -630,7 +803,7 @@ public class ChatFragment extends Fragment {
         private byte[] buffer;
 
         public SendDataThread(BluetoothSocket socket, byte[] buff) {
-            SENDING = true;
+            SENDING.set(true);
             mmSocket = socket;
             OutputStream tmpOut = null;
             buffer = buff;
@@ -640,7 +813,7 @@ public class ChatFragment extends Fragment {
                 tmpOut = socket.getOutputStream();
             } catch (IOException e) {
                 e.printStackTrace();
-                SENDING = false;
+                SENDING.set(false);
             }
             mmOutStream = tmpOut;
         }
@@ -656,12 +829,14 @@ public class ChatFragment extends Fragment {
             } catch (IOException | NullPointerException e) {
                 e.printStackTrace();
             }
-            SENDING = false;
+            SEND_REQUEST_FINISHED.set(true);
+            SENDING.set(false);
 
         }
 
         public void cancel() {
             try {
+                clearFileDescriptor(mmSocket);
                 mmSocket.close();
             } catch (IOException e) {
                 e.printStackTrace();
