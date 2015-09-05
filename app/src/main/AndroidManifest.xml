@@ -13,7 +13,9 @@
         android:theme="@style/AppTheme" >
         <activity
             android:name=".MainActivity"
-            android:label="@string/app_name" >
+            android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:alwaysRetainTaskState="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -28,6 +30,13 @@
         <service
             android:name=".MyBluetoothService"
             android:exported="false" />
+        <service
+            android:name=".ChatService"
+            android:exported="false" />
+        <service
+            android:name=".MySpotifyService"
+            android:exported="false" />
+        <!--
         <receiver android:name=".ChatFragment$PairingRequest">
             <intent-filter>
                 <action android:name="android.bluetooth.device.action.PAIRING_REQUEST" />
@@ -35,6 +44,7 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".ChatFragment$BluetoothDiscoveryReceiver"/>
+        -->
     </application>
 
 </manifest>

@@ -12,10 +12,39 @@
         android:layout_height="wrap_content"
         android:layout_weight="1" />
 
-    <FrameLayout
-        android:id="@+id/chat_fragment"
-        android:layout_weight="1"
+    <LinearLayout
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content" />
+        android:layout_height="wrap_content"
+        android:orientation="vertical" >
+
+        <ListView
+            android:id="@+id/in"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:stackFromBottom="true"
+            android:transcriptMode="alwaysScroll" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" >
+
+            <Button
+                android:id="@+id/button_start"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/start"
+                android:onClick="startChatService"/>
+
+            <Button
+                android:id="@+id/button_stop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/stop"
+                android:onClick="stopChatService"/>
+        </LinearLayout>
+
+    </LinearLayout>
 
 </LinearLayout>

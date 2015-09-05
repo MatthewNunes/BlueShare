@@ -1,11 +1,13 @@
 package com.example.c1009692.shareblue;
 
 import android.app.Activity;
+import android.app.IntentService;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.Binder;
 import android.os.Bundle;
-import android.support.v4.app.Fragment;
+import android.os.IBinder;
 import android.util.Log;
 
 import com.echonest.api.v4.Artist;
@@ -46,9 +48,9 @@ import retrofit.RetrofitError;
 import retrofit.client.Response;
 
 /**
- * Created by Matthew on 20/07/15.
+ * Created by Matthew on 08/08/15.
  */
-public class SpotifyActivity extends Fragment implements PlayerNotificationCallback, ConnectionStateCallback {
+public class MySpotifyService extends IntentService implements PlayerNotificationCallback, ConnectionStateCallback {
 
     private static final String CLIENT_ID = "902f1e299879425e8bba02157464cf37";
     private static final String REDIRECT_URL = "share-blue://callback";
@@ -56,9 +58,8 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
     private static final int REQUEST_CODE = 1337;
     private PlaylistSimple playlist;
     private SpotifyService spotify;
-    public List<String> tracks;
+    public ArrayList<String> tracks;
     final SpotifyUserData userData = new SpotifyUserData();
-    private SongListener callback;
     private Map<String, Integer> genreMap = new HashMap<>();
     ExecutorService executor;
     EchoNestAPI nestAPI;
@@ -66,14 +67,42 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
     public static final int THRESHOLD = 25;
     static final Map<String, String> userD = new HashMap<>();
     public static String USER_PREFERENCES = "com.example.nunes.shareblue.User";
-    public interface SongListener {
-        void onTracksAdded(List<String> tracks);
+
+    //TODO make spotify handle this
+    public static String SONGS_RECEIVED_PREFERENCES = "com.example.nunes.shareblue.SongsReceived";
+    private final IBinder mBinder = new SpotifyLocalBinder();
+
+    public MySpotifyService() {
+        super("MySpotifyService");
+    }
+
+
+    @Override
+    protected void onHandleIntent(Intent intent) {
+        Log.d("SpotifyFragment", "onHandleIntent called");
+        Log.d("SpotifyFragment", "ACTION: " + intent.getStringExtra("ACTION"));
+        if (intent.getStringExtra("ACTION").equals("MAIN_SPOTIFY_ACTION")) {
+            onMainActivityResult(intent.getStringExtra("type"));
+        } else if (intent.getStringExtra("ACTION").equals("DELETE_SPOTIFY")) {
+            invokeEmptyPlaylist((HashMap<String, String>)intent.getSerializableExtra("songs"));
+        } else if (intent.getStringExtra("ACTION").equals("SONG_RECEIVED")) {
+            addTracks(intent.getStringExtra("song"));
+        }
+
+    }
+
+    public class SpotifyLocalBinder extends Binder {
+        MySpotifyService getService() {
+            // Return this instance of LocalService so clients can call public methods
+            return MySpotifyService.this;
+        }
     }
 
     class SpotifyRunnable implements Runnable {
 
+        @Override
         public void run() {
-            final Map<String, String> userPreferences = (Map<String, String>)getActivity().getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).getAll();
+            final Map<String, String> userPreferences = (Map<String, String>)getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).getAll();
             spotify.getMe(new retrofit.Callback<UserPrivate>() {
                 @Override
                 public void success(UserPrivate user, Response response) {
@@ -89,7 +118,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                                     playlist = simpleP;
                                     userData.setPlaylistID(playlist.id);
                                     userPreferences.put("playlist", playlist.id);
-                                    SharedPreferences.Editor editor = getActivity().getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).edit();
+                                    SharedPreferences.Editor editor = getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).edit();
                                     for (Map.Entry<String, String> entry : userPreferences.entrySet()) {
                                         editor.putString(entry.getKey(), entry.getValue());
                                     }
@@ -109,7 +138,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                                         Log.d("SpotifyFragment ", "Successfully created playlist: " + playlist.name);
                                         userData.setPlaylistID(playlist.id);
                                         userPreferences.put("playlist", playlist.id);
-                                        SharedPreferences.Editor editor = getActivity().getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).edit();
+                                        SharedPreferences.Editor editor = getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).edit();
                                         for (Map.Entry<String, String> entry : userPreferences.entrySet()) {
                                             editor.putString(entry.getKey(), entry.getValue());
                                         }
@@ -150,11 +179,13 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                         tracks.add(savedTrackPager.items.get(rand.nextInt(savedTrackPager.items.size())).track.id);
                         Log.d("SpotifyFragment", "Track added: " + tracks.get(0));
                         Log.d("SpotifyFragment", savedTrackPager.items.get(0).track.type);
-                        callback.onTracksAdded(tracks);
+                        Intent tracksAddedIntent = new Intent(Constants.TRACKS_ADDED);
+                        tracksAddedIntent.putExtra("song", tracks);
+                        sendBroadcast(tracksAddedIntent);
                     }
 
                     boolean exceptionThrown = false;
-                    SharedPreferences sharedPreferences = getActivity().getSharedPreferences(SHARED_PREFERENCES, Context.MODE_PRIVATE);
+                    SharedPreferences sharedPreferences = getSharedPreferences(SHARED_PREFERENCES, Context.MODE_PRIVATE);
                     Map<String, ?> sharedPrefsMap = sharedPreferences.getAll();
                     Log.d("SpotifyFragment", "Shared Preferences size: " + sharedPrefsMap.size());
                     if (sharedPrefsMap.size() == 0) {
@@ -224,27 +255,14 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
 
     }
 
-    class SongGenreRunnable implements Runnable {
-
-        @Override
-        public void run() {
-
-        }
-    }
-
     @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setRetainInstance(true);
+    public void onCreate() {
+        super.onCreate();
         nestAPI = new EchoNestAPI("E45RYODK2CMOYIYSH");
-        AuthenticationRequest.Builder builder = new AuthenticationRequest.Builder(CLIENT_ID, AuthenticationResponse.Type.TOKEN, REDIRECT_URL);
-        builder.setScopes(new String[]{"user-read-private", "streaming", "playlist-modify-public", "playlist-modify-private", "playlist-read-private", "user-library-read"});
-        AuthenticationRequest request = builder.build();
-        AuthenticationClient.openLoginActivity(getActivity(), REQUEST_CODE, request);
         executor = Executors.newSingleThreadExecutor();
 
     }
-
+/**
     @Override
     public void onAttach(Activity activity) {
         super.onAttach(activity);
@@ -258,22 +276,18 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                     + " must implement OnHeadlineSelectedListener");
         }
     }
+*/
 
-    @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+    public void onMainActivityResult(String accessToken) {
+        SpotifyApi api = new SpotifyApi(executor, executor);
+        api.setAccessToken(accessToken);
+        spotify = api.getService();
+        executor.execute(new SpotifyRunnable());
 
+    }
 
-        if (requestCode == REQUEST_CODE) {
-            AuthenticationResponse response = AuthenticationClient.getResponse(resultCode, intent);
-            if (response.getType() == AuthenticationResponse.Type.TOKEN) {
-                SpotifyApi api = new SpotifyApi(executor, executor);
-                api.setAccessToken(response.getAccessToken());
-                spotify = api.getService();
-                executor.execute(new SpotifyRunnable());
-
-
-            }
-        }
+    public IBinder onBind(Intent intent) {
+        return mBinder;
     }
 
     public void addTracks(String tracksToAdd) {
@@ -298,7 +312,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
             spotify.getTrack(tracksToAdd.trim().split(":")[2], new Callback<Track>() {
                 @Override
                 public void success(Track track, Response response) {
-                    SharedPreferences sharedPreferences = getActivity().getSharedPreferences(SHARED_PREFERENCES, Context.MODE_PRIVATE);
+                    SharedPreferences sharedPreferences = getSharedPreferences(SHARED_PREFERENCES, Context.MODE_PRIVATE);
                     Map<String, ?> preferencesMap = sharedPreferences.getAll();
                     boolean found = false;
                     List<ArtistSimple> artists = track.artists;
@@ -344,16 +358,16 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
         }
     }
 
-    public void invokeEmptyPlaylist(Map<String, ?> tracks) {
+    public void invokeEmptyPlaylist(HashMap<String, String> tracks) {
         CleanPlaylist playlistRunnable = new CleanPlaylist(tracks);
         executor.execute(playlistRunnable);
 
     }
 
     class CleanPlaylist implements Runnable {
-        Map<String, ?> tracks;
+        HashMap<String, String> tracks;
 
-        public CleanPlaylist(Map<String, ?> tracks) {
+        public CleanPlaylist(HashMap<String, String> tracks) {
             this.tracks = tracks;
         }
 
@@ -367,7 +381,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
                 removalList.add(removeMe);
             }
             tracksToRemove.tracks = removalList;
-            Map<String, ?> userPrefs = getActivity().getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).getAll();
+            Map<String, ?> userPrefs = getSharedPreferences(USER_PREFERENCES, Context.MODE_PRIVATE).getAll();
             spotify.removeTracksFromPlaylist((String)userPrefs.get("username"), (String)userPrefs.get("playlist"), tracksToRemove, new Callback<SnapshotId>() {
                 @Override
                 public void success(SnapshotId snapshotId, Response response) {
@@ -412,7 +426,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
     }
 
     @Override
-    public void onPlaybackEvent(EventType eventType, PlayerState playerState) {
+    public void onPlaybackEvent(PlayerNotificationCallback.EventType eventType, PlayerState playerState) {
         Log.d("SpotifyActivity", "Playback event received: " + eventType.name());
         switch (eventType) {
             default:
@@ -421,7 +435,7 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
     }
 
     @Override
-    public void onPlaybackError(ErrorType errorType, String s) {
+    public void onPlaybackError(PlayerNotificationCallback.ErrorType errorType, String s) {
         Log.d("SpotifyActivity", "Playback error received: " + errorType.name());
         switch (errorType) {
             default:
@@ -436,82 +450,4 @@ public class SpotifyActivity extends Fragment implements PlayerNotificationCallb
         super.onDestroy();
     }
 
-    class GenreThread extends Thread {
-        EchoNestAPI nestAPI;
-
-        public GenreThread() {
-            nestAPI = new EchoNestAPI("E45RYODK2CMOYIYSH");
-        }
-
-        @Override
-        public void run() {
-            tracks = new ArrayList<>();
-            Map<String, Object> savedTrackOptions = new HashMap<>();
-            savedTrackOptions.put("limit", "50");
-            spotify.getMySavedTracks(savedTrackOptions, new retrofit.Callback<Pager<SavedTrack>>() {
-                @Override
-                public void success(Pager<SavedTrack> savedTrackPager, Response response) {
-                    Log.d("SpotifyFragment", "Successfully got saved tracks");
-                    Random rand = new Random();
-                    if (savedTrackPager.total > 0) {
-                        Log.d("SpotifyFragment", "Saved Tracks Returned: " + savedTrackPager.total);
-                        tracks.add(savedTrackPager.items.get(rand.nextInt(savedTrackPager.items.size())).track.id);
-                        Log.d("SpotifyFragment", "Track added: " + tracks.get(0));
-                        Log.d("SpotifyFragment", savedTrackPager.items.get(0).track.type);
-                        callback.onTracksAdded(tracks);
-                    }
-                    boolean exceptionThrown = false;
-                    for (SavedTrack track : savedTrackPager.items) {
-                        int i = 0;
-                        while (i < track.track.artists.size()) {
-                            ArtistSimple artist = track.track.artists.get(i);
-                            List<Artist> artistsFound = null;
-                            try {
-                                artistsFound = nestAPI.searchArtists(artist.name);
-                                exceptionThrown = false;
-                                i += 1;
-                            } catch (EchoNestException e) {
-                                if (e.getCode() == 3) {
-                                    exceptionThrown = true;
-                                    try {
-                                        Thread.sleep(60000);
-                                    } catch (InterruptedException e1) {
-                                        e1.printStackTrace();
-                                    }
-                                    Log.d("SpotifyFragment", "Error finding artist! " + e.getCode());
-                                    e.printStackTrace();
-                                }
-                            }
-                            if ((!exceptionThrown) && (artistsFound != null) && (artistsFound.size() > 0)) {
-                                Artist foundArtist = artistsFound.get(0);
-                                try {
-                                    List<Term> terms = foundArtist.getTerms();
-                                    for (Term term : terms) {
-                                        Log.d("SpotifyFragment Term", term.getName());
-                                        Integer count = genreMap.get(term.getName());
-                                        if (count == null) {
-                                            genreMap.put(term.getName(), 1);
-                                        } else {
-                                            genreMap.put(term.getName(), count + 1);
-                                        }
-                                    }
-                                } catch (EchoNestException e) {
-                                    e.printStackTrace();
-                                }
-                            } else {
-                                Log.d("SpotifyFragment", "Artist not found: " + artist.name);
-                            }
-                        }
-                    }
-
-                }
-
-                @Override
-                public void failure(RetrofitError error) {
-                    Log.d("SpotifyFragment ", "Error getting saved Tracks: " + error.toString());
-                }
-            });
-
-        }
-    }
 }

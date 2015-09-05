@@ -2,6 +2,9 @@ package com.example.c1009692.shareblue;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.IntentService;
+import android.app.PendingIntent;
+import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
@@ -10,16 +13,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.Looper;
-import android.os.Message;
-import android.os.ParcelFileDescriptor;
-import android.os.Process;
-import android.os.SystemClock;
-import android.support.v4.app.Fragment;
+import android.content.SharedPreferences;
+import android.os.*;
+import android.support.v4.app.NotificationCompat;
+import android.support.v4.app.TaskStackBuilder;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -28,9 +25,8 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ListView;
+import android.widget.RemoteViews;
 import android.widget.Toast;
-
-import com.squareup.okhttp.Call;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -38,7 +34,6 @@ import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
-import java.net.Socket;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -55,9 +50,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Created by Matthew on 17/07/15.
+ * Created by Matthew on 07/08/15.
  */
-public class ChatFragment extends Fragment {
+public class ChatService extends Service {
 
     static Handler myHandler;
     public final BluetoothDiscoveryReceiver discoveryReceiver = new BluetoothDiscoveryReceiver();
@@ -71,10 +66,16 @@ public class ChatFragment extends Fragment {
     private EditText editText;
     private ArrayAdapter<String> conversationAdapter;
     public static boolean CLIENT_STARTED = false;
-    public static boolean runOnce = false;
+    private static int NOTIFICATION_ID = 93;
+    private static String CLOSE_ACTION = "CLOSE_FOREGROUND";
+    public static int count = 0;
     private String tracks;
     List<String> blacklistedDevices = new ArrayList<>();
     private final String CLOSE_CLIENT_ACTION = "com.example.c1009692.shareblue.ChatFragment.CLOSE_CLIENT";
+    private final String SONG_SEND_PREFERENCE = "com.example.nunes.shareblue.ChatFragment.SEND";
+    private final String SONGS_RECEIVED_PREFERENCE = "com.example.nunes.shareblue.ChatFragment.SONGS_RECEIVED_PREFERENCE";
+    private SharedPreferences songToSend;
+    private SharedPreferences songReceived;
     Thread runningThread;
     ReceiveDataThread readThread;
     SendDataThread writeThread;
@@ -86,6 +87,7 @@ public class ChatFragment extends Fragment {
     public static AtomicBoolean SEND_RECEIVE = new AtomicBoolean(false);
     public static AtomicBoolean MAY_RECEIVE = new AtomicBoolean(false);
     public static AtomicBoolean DELAY = new AtomicBoolean(false);
+    private final Binder mBinder = new LocalBinder();
 
     MainThread mainThread;
     ExecutorService executor;
@@ -96,13 +98,23 @@ public class ChatFragment extends Fragment {
 
     //WHILE MAY RECEIVE SUNDAY
 
+   // public ChatService() {
+   //     super("ChatService");
+   // }
+
+    public class LocalBinder extends Binder {
+        ChatService getService() {
+            // Return this instance of LocalService so clients can call public methods
+            return ChatService.this;
+        }
+    }
 
     private static final class mHandler extends Handler {
 
 
-        private final WeakReference<ChatFragment> mTarget;
-        mHandler(ChatFragment target) {
-            mTarget = new WeakReference<>(target);
+        private final ChatService mTarget;
+        mHandler(ChatService target) {
+            mTarget = target;
         }
 
         @Override
@@ -111,9 +123,9 @@ public class ChatFragment extends Fragment {
                 BluetoothSocket bluetoothSocket = (BluetoothSocket) message.obj;
                 //MainActivity target = mTarget.get();
                 //Toast.makeText(target.getApplicationContext(), "Connected", Toast.LENGTH_LONG).show();
-                ChatFragment myFragment = mTarget.get();
+
                 Log.d("ChatFragment", "Preparing to receive a message");
-                myFragment.startReceiveThread(bluetoothSocket);
+                mTarget.startReceiveThread(bluetoothSocket);
 
             }
             else if (message.what == Constants.MESSAGE_SEND) {
@@ -121,46 +133,42 @@ public class ChatFragment extends Fragment {
                 //MainActivity target =
                 // mTarget.get();
                 //Toast.makeText(target.getApplicationContext(), "Connected", Toast.LENGTH_LONG).show();
-                ChatFragment myFragment = mTarget.get();
                 Log.d("ChatFragment", "Preparing to send a message");
-                myFragment.startSendThread(bluetoothSocket);
+                mTarget.startSendThread(bluetoothSocket);
             }
             else if (message.what == Constants.MESSAGE_RECEIVED) {
                 Map<String, Object> msg = (HashMap<String, Object>)message.obj;
                 byte[] dataReceived = (byte[])msg.get("buffer");
                 BluetoothSocket bluetoothSocket = (BluetoothSocket)msg.get("socket");
-                ChatFragment myFragment = mTarget.get();
                 //myFragment.myHandler.obtainMessage(Constants.SEND_RECEIVE, bluetoothSocket).sendToTarget();
                 CLIENT_STARTED = false;
-                myFragment.updateAdapter(dataReceived);
-                myFragment.closeReceiveThread();
-                myFragment.bluetoothAdapter.startDiscovery();
-                myFragment.startServerThread();
+                mTarget.updateAdapter(dataReceived);
+                mTarget.closeReceiveThread();
+                mTarget.bluetoothAdapter.startDiscovery();
+                mTarget.startServerThread();
 
                 /** Needs to be moved to send data part
-                if (myFragment.CLIENT_STARTED == true) {
-                    mTarget.get().discoveryReceiver.addToBlacklist();
-                    mTarget.get().closeReceiveThread();
-                    mTarget.get().discoveryReceiver.disconnect();
-                }
-                */
+                 if (myFragment.CLIENT_STARTED == true) {
+                 mTarget.get().discoveryReceiver.addToBlacklist();
+                 mTarget.get().closeReceiveThread();
+                 mTarget.get().discoveryReceiver.disconnect();
+                 }
+                 */
             }
             else if (message.what == Constants.SEND_RECEIVE) {
                 BluetoothSocket bluetoothSocket = (BluetoothSocket) message.obj;
-                ChatFragment myFragment = mTarget.get();
                 Log.d("ChatFragment", "Preparing to send a message in SEND_RECEIVE");
                 SEND_RECEIVE.set(true);
                 CLIENT_STARTED = false;
-                myFragment.bluetoothAdapter.cancelDiscovery();
-                myFragment.startSendThread(bluetoothSocket);
+                mTarget.bluetoothAdapter.cancelDiscovery();
+                mTarget.startSendThread(bluetoothSocket);
             }
             else if (message.what == Constants.CLOSE_THREADS) {
-                ChatFragment myFragment = mTarget.get();
-                myFragment.closeReceiveThread();
-                myFragment.closeSendThread();
+                mTarget.closeReceiveThread();
+                mTarget.closeSendThread();
                 CLIENT_STARTED = false;
-                myFragment.bluetoothAdapter.startDiscovery();
-                myFragment.startServerThread();
+                mTarget.bluetoothAdapter.startDiscovery();
+                mTarget.startServerThread();
 
             }
 
@@ -171,7 +179,7 @@ public class ChatFragment extends Fragment {
         private Handler theHandler;
 
         public MainThread() {
-            super("MainThread", Process.THREAD_PRIORITY_BACKGROUND);
+            super("MainThread", android.os.Process.THREAD_PRIORITY_BACKGROUND);
         }
 
         @Override
@@ -222,12 +230,12 @@ public class ChatFragment extends Fragment {
                                 CLIENT_STARTED = false;
                                 RUN_THREAD.set(false);
                                 /**
-                                try {
-                                    runClientThread.join();
-                                } catch (InterruptedException e) {
-                                    e.printStackTrace();
-                                }
-                                */
+                                 try {
+                                 runClientThread.join();
+                                 } catch (InterruptedException e) {
+                                 e.printStackTrace();
+                                 }
+                                 */
                                 bluetoothAdapter.startDiscovery();
 
 
@@ -238,6 +246,7 @@ public class ChatFragment extends Fragment {
         }
 
         public void runMainThread() {
+            while (theHandler==null);
             theHandler.sendEmptyMessage(1);
         }
 
@@ -248,7 +257,7 @@ public class ChatFragment extends Fragment {
 
         @Override
         public Boolean call() {
-          //  if ((!SEND_RECEIVE.get()) && (!MAY_RECEIVE.get())) {
+            //  if ((!SEND_RECEIVE.get()) && (!MAY_RECEIVE.get())) {
             if (!RECEIVING.get()) {
                 discoveryReceiver.disconnect();
                 while (SENDING.get()) {
@@ -263,32 +272,68 @@ public class ChatFragment extends Fragment {
                     }
                 }
             }
-          //  }
-           // else {
-           //     try {
-           //         Thread.sleep(3000);
-           //         MAY_RECEIVE.set(false);
-           //     } catch (InterruptedException e) {
-           //         e.printStackTrace();
-           //     }
-          //  }
+            //  }
+            // else {
+            //     try {
+            //         Thread.sleep(3000);
+            //         MAY_RECEIVE.set(false);
+            //     } catch (InterruptedException e) {
+            //         e.printStackTrace();
+            //     }
+            //  }
             return true;
         }
 
     }
 
     @Override
-    public void onAttach(Activity activity) {
-        super.onAttach(activity);
-
-        // This makes sure that the container activity has implemented
-        // the callback interface. If not, it throws an exception
-        try {
-            callback = (DeviceListener) activity;
-        } catch (ClassCastException e) {
-            throw new ClassCastException(activity.toString()
-                    + " must implement OnHeadlineSelectedListener");
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if ((intent != null) && (intent.getAction() != null) && (intent.getAction().equals(CLOSE_ACTION))) {
+            Log.d("ChatService", "Stop Foreground");
+            stopForeground(true);
         }
+        else {
+            if (executor == null) {
+                executor = Executors.newSingleThreadExecutor();
+            }
+            mainThread.runMainThread();
+            songToSend = this.getSharedPreferences(SONG_SEND_PREFERENCE, Context.MODE_PRIVATE);
+            songReceived = this.getSharedPreferences(SONGS_RECEIVED_PREFERENCE, Context.MODE_PRIVATE);
+
+            NotificationCompat.Builder notificationBuilder = new NotificationCompat.Builder(this)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle("Track Sharer")
+                    .setContentText("Sending and receiving tracks");
+            Intent activityIntent = new Intent(this, MainActivity.class);
+            //activityIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP );
+            activityIntent.setFlags(Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            activityIntent.addCategory(Intent.ACTION_MAIN);
+            activityIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+            Intent closeIntent = new Intent(this, ChatService.class);
+            closeIntent.setAction(CLOSE_ACTION);
+            PendingIntent pcloseIntent = PendingIntent.getService(this, 0, closeIntent, 0);
+            //TaskStackBuilder stackBuilder = TaskStackBuilder.create(this);
+            //stackBuilder.addParentStack(MainActivity.class);
+            //stackBuilder.addNextIntent(activityIntent);
+            //PendingIntent mainActivityPendingIntent = stackBuilder.getPendingIntent(0, PendingIntent.FLAG_UPDATE_CURRENT);
+            PendingIntent mainActivityPendingIntent = PendingIntent.getActivity(getApplicationContext(), 0, activityIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+            notificationBuilder.setContentIntent(mainActivityPendingIntent);
+            notificationBuilder.addAction(R.drawable.close, "", pcloseIntent);
+            RemoteViews contentView = new RemoteViews(getPackageName(), R.layout.activity_notification);
+            contentView.setImageViewResource(R.id.image, R.mipmap.ic_launcher);
+            contentView.setOnClickPendingIntent(R.id.closeImage, pcloseIntent);
+            contentView.setTextViewText(R.id.title, "Blue Share");
+            contentView.setTextViewText(R.id.text, "Sending/Receiving songs");
+            contentView.setOnClickPendingIntent(R.id.layout, mainActivityPendingIntent);
+            notificationBuilder.setContent(contentView);
+            startForeground(NOTIFICATION_ID, notificationBuilder.build());
+        }
+        return START_NOT_STICKY;
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return mBinder;
     }
 
     public void startReceiveThread(BluetoothSocket socket) {
@@ -297,7 +342,7 @@ public class ChatFragment extends Fragment {
     }
 
     public void startSendThread(BluetoothSocket socket) {
-        byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
+        byte[] b = songToSend.getAll().get("song").toString().getBytes(Charset.forName("UTF-8"));
         writeThread = new SendDataThread(socket, b);
         writeThread.start();
     }
@@ -375,9 +420,26 @@ public class ChatFragment extends Fragment {
     public void updateAdapter(byte[] msg) {
         try {
             String dataReceived = new String(msg, "UTF-8");
-            callback.onDataReceived(dataReceived);
-            conversationAdapter.add(dataReceived);
-            conversationAdapter.notifyDataSetChanged();
+            String[] songsReceived = dataReceived.split(",");
+            //for (String song : songsReceived) {
+                //if (!songReceived.contains(dataReceived.trim())) {
+                    Log.d("ChatFragment", "About to send intent");
+                    Intent dataReceivedIntent = new Intent(Constants.DATA_FOUND);
+                    dataReceivedIntent.putExtra("song", dataReceived);
+                    sendBroadcast(dataReceivedIntent);
+
+                    Intent spotifyAddIntent = new Intent(this, MySpotifyService.class);
+                    spotifyAddIntent.putExtra("ACTION", "SONG_RECEIVED");
+                    spotifyAddIntent.putExtra("song", dataReceived.trim());
+                    startService(spotifyAddIntent);
+                    SharedPreferences.Editor editor = songReceived.edit();
+                    editor.putString(dataReceived.trim(), dataReceived.trim());
+                    editor.apply();
+                //}
+          //  }
+            //callback.onDataReceived(dataReceived);
+            //conversationAdapter.add(dataReceived);
+           // conversationAdapter.notifyDataSetChanged();
         } catch (UnsupportedEncodingException e) {
             e.printStackTrace();
         }
@@ -385,97 +447,43 @@ public class ChatFragment extends Fragment {
 
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    public void onCreate() {
+        if (mainThread == null) {
+            mainThread = new MainThread();
+            mainThread.start();
+        }
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         if (bluetoothAdapter == null) {
-            Toast.makeText(getActivity(), "This device does not support Bluetooth!", Toast.LENGTH_LONG).show();
-            getActivity().finish();
-        }
-        if ((!bluetoothAdapter.isEnabled()) || (!bluetoothAdapter.isDiscovering())) {
-            Intent discoverBluetooth = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
-            discoverBluetooth.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 0);
-            getActivity().startActivityForResult(discoverBluetooth, Constants.REQUEST_DISCOVERABLE_BT);
-        }
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        editText = (EditText) getActivity().findViewById(R.id.edit_text_out);
-        conversationAdapter = new ArrayAdapter<>(getActivity(), R.layout.message);
-        ListView conversationView = (ListView) getActivity().findViewById(R.id.in);
-        conversationView.setAdapter(conversationAdapter);
-        if (executor == null) {
-            executor = Executors.newSingleThreadExecutor();
+            Log.d("ChatService", "This device doesn't support Bluetooth");
+            stopSelf();
         }
         IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
         IntentFilter action_disc_filter = new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
         IntentFilter close_client = new IntentFilter(CLOSE_CLIENT_ACTION);
-        getActivity().registerReceiver(discoveryReceiver, filter);
-        getActivity().registerReceiver(discoveryReceiver, action_disc_filter);
-        getActivity().registerReceiver(discoveryReceiver, close_client);
+        registerReceiver(discoveryReceiver, filter);
+        registerReceiver(discoveryReceiver, action_disc_filter);
+        registerReceiver(discoveryReceiver, close_client);
 
         IntentFilter filter2 = new IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST);
         /*
          * Registering a new BTBroadcast receiver from the Main Activity context
          * with pairing request event
          */
-        getActivity().registerReceiver(pairingRequest, filter2);
+        registerReceiver(pairingRequest, filter2);
         if (myHandler == null) {
             myHandler = new mHandler(this);
         }
 
-        if (mainThread == null) {
-            mainThread = new MainThread();
-            mainThread.start();
-        }
-
-
-
+        super.onCreate();
     }
 
-    @Override
-    public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
-        View view = inflater.inflate(R.layout.activity_chatfragment, container, false);
-        Button sendButton = (Button) view.findViewById(R.id.button_send);
 
-        sendButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                Toast.makeText(view.getContext(), "works", Toast.LENGTH_LONG).show();
-                byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
-                //SendDataThread sendDataThread = new SendDataThread(bSocket, b);
-                //sendDataThread.start();
-            }
-        });
-        return view;
-    }
-
-    @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (!runOnce) {
-            if (resultCode == Activity.RESULT_OK) {
-                //TODO need to fix 1337 thing
-                if ((requestCode == Constants.REQUEST_ENABLE_BT) || (requestCode == 1337)) {
-                    boolean started = bluetoothAdapter.startDiscovery();
-                    if (started) {
-                        mainThread.runMainThread();
-                        runOnce = true;
-                        //ServerThread serverThread = new ServerThread();
-                        //s                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            erverThread.start();
-                    } else {
-                    }
-                }
-                if (requestCode == Constants.REQUEST_DISCOVERABLE_BT) {
-                }
-            }
-
-        }
-    }
 
     public void setTracks(String tracks) {
         this.tracks = tracks;
+        SharedPreferences.Editor editor = songToSend.edit();
+        editor.putString("song", tracks);
+        editor.apply();
     }
 
     private class ServerThread extends Thread {
@@ -563,10 +571,10 @@ public class ChatFragment extends Fragment {
                 e.printStackTrace();
                 SENDING.set(false);
                 /** Going to need cancel elsewhere
-                if (clientSocket != null) {
-                    cancel();
-                    SEND_REQUEST_FINISHED.set(true);
-                }*/
+                 if (clientSocket != null) {
+                 cancel();
+                 SEND_REQUEST_FINISHED.set(true);
+                 }*/
             }
             //myHandler.obtainMessage(Constants.MESSAGE_READ, bSocket).sendToTarget();
         }
@@ -596,7 +604,12 @@ public class ChatFragment extends Fragment {
                     //if (("MatthewsPhone").equals(device.getName())) {
                     bluetoothDevices.add(device);
                     devices.put(device.getName(), device.getAddress());
-                    callback.onDeviceFound(device);
+                    Log.d("ChatService", "DEVICE FOUND! " + device.getName());
+                    Intent deviceFoundIntent = new Intent(Constants.DEVICE_FOUND);
+                    deviceFoundIntent.putExtra("name", device.getName());
+                    deviceFoundIntent.putExtra("address", device.getAddress());
+                    sendBroadcast(deviceFoundIntent);
+                    //callback.onDeviceFound(device);
                     //}
                 }
 
@@ -609,26 +622,26 @@ public class ChatFragment extends Fragment {
                 }
             }
             /**
-            else if(BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
-                if ((currentDevice != null) && (blacklistedDevices.size() > 0) && (blacklistedDevices.get(blacklistedDevices.size() -1).equals(currentDevice.getAddress()))) {
-                    blacklistedDevices.remove(blacklistedDevices.size() - 1);
-                    bluetoothDevices.add(0, currentDevice);
-                }
-                SEND_REQUEST_FINISHED = true;
-                Log.d("ChatFragment", "Blacklisted Devices: " + blacklistedDevices.size());
-                Log.d("ChatFragment", "Bluetooth Devices: " + bluetoothDevices.size());
-                //disconnect();
-            }
+             else if(BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
+             if ((currentDevice != null) && (blacklistedDevices.size() > 0) && (blacklistedDevices.get(blacklistedDevices.size() -1).equals(currentDevice.getAddress()))) {
+             blacklistedDevices.remove(blacklistedDevices.size() - 1);
+             bluetoothDevices.add(0, currentDevice);
+             }
+             SEND_REQUEST_FINISHED = true;
+             Log.d("ChatFragment", "Blacklisted Devices: " + blacklistedDevices.size());
+             Log.d("ChatFragment", "Bluetooth Devices: " + bluetoothDevices.size());
+             //disconnect();
+             }
              */
             /**
-            else if((BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) && (bSocket != null)) {
-                Log.d("ChatFragment", "Connected!");
-                //byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
-                //blacklisted device must be added a second time as it will be removed once when the connection terminates
-                //sendDataThread = new SendDataThread(bSocket, b);
-                //sendDataThread.start();
-            }
-            */
+             else if((BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) && (bSocket != null)) {
+             Log.d("ChatFragment", "Connected!");
+             //byte[] b = tracks.getBytes(Charset.forName("UTF-8"));
+             //blacklisted device must be added a second time as it will be removed once when the connection terminates
+             //sendDataThread = new SendDataThread(bSocket, b);
+             //sendDataThread.start();
+             }
+             */
             else if(CLOSE_CLIENT_ACTION.equals(action)) {
                 clientThread.cancel();
                 try {
@@ -679,18 +692,22 @@ public class ChatFragment extends Fragment {
                 if (bluetoothDevices.size() > 0) {
                     currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
                     /**
-                    while (bluetoothAdapter.getName().compareToIgnoreCase(currentDevice.getName() + "") > 0 ) {
-                        if (bluetoothDevices.size() > 0) {
-                            blacklistedDevices.add(currentDevice.getAddress());
-                            currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
+                     while (bluetoothAdapter.getName().compareToIgnoreCase(currentDevice.getName() + "") > 0 ) {
+                     if (bluetoothDevices.size() > 0) {
+                     blacklistedDevices.add(currentDevice.getAddress());
+                     currentDevice = bluetoothDevices.remove(bluetoothDevices.size() - 1);
+                     }
+                     else {
+                     currentDevice = null;
+                     break;
+                     }
+                     }
+                     */
+                    if ((currentDevice != null) && (!currentDevice.getName().equalsIgnoreCase("Bishop"))) {
+                        if (currentDevice.getName().equalsIgnoreCase("MatthewsPhone") || currentDevice.getName().equalsIgnoreCase("TestPhone")) {
+                            count+=1;
+                            Log.d("COUNT", "COUNT: " + count);
                         }
-                        else {
-                            currentDevice = null;
-                            break;
-                        }
-                    }
-                    */
-                    if (currentDevice != null) {
                         bluetoothDevices.add(0, currentDevice);
                         Log.d("ChatFragment", "Trying to connect to " + currentDevice.getName());
                         SENDING.set(true);
@@ -835,12 +852,12 @@ public class ChatFragment extends Fragment {
             SEND_REQUEST_FINISHED.set(true);
             SENDING.set(false);
             /**
-            if (SEND_RECEIVE.get()) {
-                SEND_RECEIVE.set(false);
-                myHandler.obtainMessage(Constants.CLOSE_THREADS).sendToTarget();
+             if (SEND_RECEIVE.get()) {
+             SEND_RECEIVE.set(false);
+             myHandler.obtainMessage(Constants.CLOSE_THREADS).sendToTarget();
 
-            }
-            */
+             }
+             */
 
         }
 
@@ -857,129 +874,77 @@ public class ChatFragment extends Fragment {
 
     @Override
     public void onDestroy() {
-        getActivity().unregisterReceiver(discoveryReceiver);
-        getActivity().unregisterReceiver(pairingRequest);
+        Log.d("ChatFragment", "I've been destroyed");
+        mainThread.quit();
+        unregisterReceiver(discoveryReceiver);
+        unregisterReceiver(pairingRequest);
         super.onDestroy();
 
     }
-    //WEIRD STUFF STARTS HERE
-    /**
-    public static interface BluetoothSocketWrapper {
 
-        InputStream getInputStream() throws IOException;
+    //@Override
+    //protected void onHandleIntent(Intent intent) {
+    //    if (executor == null) {
+    //        executor = Executors.newSingleThreadExecutor();
+    //    }
 
-        OutputStream getOutputStream() throws IOException;
-
-        String getRemoteDeviceName();
-
-        void connect() throws IOException;
-
-        String getRemoteDeviceAddress();
-
-        void close() throws IOException;
-
-        BluetoothSocket getUnderlyingSocket();
-
-    }
-
-
-    public static class NativeBluetoothSocket implements BluetoothSocketWrapper {
-
-        private BluetoothSocket socket;
-
-        public NativeBluetoothSocket(BluetoothSocket tmp) {
-            this.socket = tmp;
+        /*
+        if (mainThread == null) {
+            mainThread = new MainThread();
+            mainThread.start();
         }
 
-        @Override
-        public InputStream getInputStream() throws IOException {
-            return socket.getInputStream();
-        }
+        mainThread.runMainThread();
+        */
+    //    startServerThread();
+    //    while (true) {
+    //        Log.d("ChatFragment", "MAINTHREAD: " + (Looper.myLooper() == Looper.getMainLooper()) + "");
+    //        Random rand = new Random();
+    //        int timeToRun = rand.nextInt(15) + 30;
+    //        Log.d("ChatFragment", "Server Started for " + timeToRun + " seconds");
+    //        boolean started = bluetoothAdapter.startDiscovery();
+    //        try {
+    //            Thread.sleep(timeToRun * 1000);
+    //        } catch (InterruptedException e) {
+     //           e.printStackTrace();
+    //        }
+    //        while (RECEIVING.get()) ;
+    //        RUN_THREAD.set(true);
+    //        CLIENT_STARTED = true;
+    //        bluetoothAdapter.cancelDiscovery();
+    //        SEND_REQUEST_FINISHED.set(true);
+            //attemptConnectionThread = new Thread(attemptConnectionRunnable);
+            //attemptConnectionThread.start();
 
-        @Override
-        public OutputStream getOutputStream() throws IOException {
-            return socket.getOutputStream();
-        }
+    //        Log.d("ChatFragment", "Client Started for " + timeToRun + " seconds");
+    //        long t1 = SystemClock.elapsedRealtime() / 1000;
+    //        while (((SystemClock.elapsedRealtime() / 1000) - t1) < timeToRun) {
+    //            Future<Boolean> finished = executor.submit(new RunClientThread());
+    //            try {
+    //                finished.get();
+    //            } catch (InterruptedException e) {
+    //                e.printStackTrace();
+    //            } catch (ExecutionException e) {
+    //                e.printStackTrace();
+    //            }
 
-        @Override
-        public String getRemoteDeviceName() {
-            return socket.getRemoteDevice().getName();
-        }
+    //        }
+    //        while (SENDING.get()) ;
 
-        @Override
-        public void connect() throws IOException {
-            socket.connect();
-        }
+    //        SEND_REQUEST_FINISHED.set(false);
+    //        CLIENT_STARTED = false;
+    //        RUN_THREAD.set(false);
+            /**
+             try {
+             runClientThread.join();
+             } catch (InterruptedException e) {
+             e.printStackTrace();
+             }
+             */
+    //        bluetoothAdapter.startDiscovery();
 
-        @Override
-        public String getRemoteDeviceAddress() {
-            return socket.getRemoteDevice().getAddress();
-        }
-
-        @Override
-        public void close() throws IOException {
-            socket.close();
-        }
-
-        @Override
-        public BluetoothSocket getUnderlyingSocket() {
-            return socket;
-        }
-
-    }
-
-    public class FallbackBluetoothSocket extends NativeBluetoothSocket {
-
-        private BluetoothSocket fallbackSocket;
-
-        public FallbackBluetoothSocket(BluetoothSocket tmp) throws FallbackException {
-            super(tmp);
-            try
-            {
-                Class<?> clazz = tmp.getRemoteDevice().getClass();
-                Class<?>[] paramTypes = new Class<?>[] {Integer.TYPE};
-                Method m = clazz.getMethod("createInsecureRfcommSocket", paramTypes);
-                Object[] params = new Object[] {Integer.valueOf(1)};
-                fallbackSocket = (BluetoothSocket) m.invoke(tmp.getRemoteDevice(), params);
-            }
-            catch (Exception e)
-            {
-                throw new FallbackException(e);
-            }
-        }
-
-        @Override
-        public InputStream getInputStream() throws IOException {
-            return fallbackSocket.getInputStream();
-        }
-
-        @Override
-        public OutputStream getOutputStream() throws IOException {
-            return fallbackSocket.getOutputStream();
-        }
+    //    }
+    //}
 
 
-        @Override
-        public void connect() throws IOException {
-            fallbackSocket.connect();
-        }
-
-
-        @Override
-        public void close() throws IOException {
-            fallbackSocket.close();
-        }
-
-    }
-
-    public static class FallbackException extends Exception {
-
-        private static final long serialVersionUID = 1L;
-
-        public FallbackException(Exception e) {
-            super(e);
-        }
-
-    }
-    */
 }
