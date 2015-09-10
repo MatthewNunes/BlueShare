@@ -1,6 +1,5 @@
 package com.example.c1009692.shareblue;
 
-import android.content.SharedPreferences;
 import android.util.Log;
 
 /**

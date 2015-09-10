@@ -1,12 +1,10 @@
 package com.example.c1009692.shareblue;
 
-import android.app.Activity;
 import android.app.IntentService;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Binder;
-import android.os.Bundle;
 import android.os.IBinder;
 import android.util.Log;
 
@@ -14,9 +12,6 @@ import com.echonest.api.v4.Artist;
 import com.echonest.api.v4.EchoNestAPI;
 import com.echonest.api.v4.EchoNestException;
 import com.echonest.api.v4.Term;
-import com.spotify.sdk.android.authentication.AuthenticationClient;
-import com.spotify.sdk.android.authentication.AuthenticationRequest;
-import com.spotify.sdk.android.authentication.AuthenticationResponse;
 import com.spotify.sdk.android.player.ConnectionStateCallback;
 import com.spotify.sdk.android.player.PlayerNotificationCallback;
 import com.spotify.sdk.android.player.PlayerState;
@@ -52,10 +47,7 @@ import retrofit.client.Response;
  */
 public class MySpotifyService extends IntentService implements PlayerNotificationCallback, ConnectionStateCallback {
 
-    private static final String CLIENT_ID = "902f1e299879425e8bba02157464cf37";
-    private static final String REDIRECT_URL = "share-blue://callback";
 
-    private static final int REQUEST_CODE = 1337;
     private PlaylistSimple playlist;
     private SpotifyService spotify;
     public ArrayList<String> tracks;
@@ -65,11 +57,8 @@ public class MySpotifyService extends IntentService implements PlayerNotificatio
     EchoNestAPI nestAPI;
     public static String SHARED_PREFERENCES = "com.example.nunes.shareblue.Genres";
     public static final int THRESHOLD = 25;
-    static final Map<String, String> userD = new HashMap<>();
     public static String USER_PREFERENCES = "com.example.nunes.shareblue.User";
 
-    //TODO make spotify handle this
-    public static String SONGS_RECEIVED_PREFERENCES = "com.example.nunes.shareblue.SongsReceived";
     private final IBinder mBinder = new SpotifyLocalBinder();
 
     public MySpotifyService() {
@@ -262,21 +251,6 @@ public class MySpotifyService extends IntentService implements PlayerNotificatio
         executor = Executors.newSingleThreadExecutor();
 
     }
-/**
-    @Override
-    public void onAttach(Activity activity) {
-        super.onAttach(activity);
-
-        // This makes sure that the container activity has implemented
-        // the callback interface. If not, it throws an exception
-        try {
-            callback = (SongListener) activity;
-        } catch (ClassCastException e) {
-            throw new ClassCastException(activity.toString()
-                    + " must implement OnHeadlineSelectedListener");
-        }
-    }
-*/
 
     public void onMainActivityResult(String accessToken) {
         SpotifyApi api = new SpotifyApi(executor, executor);
@@ -393,11 +367,30 @@ public class MySpotifyService extends IntentService implements PlayerNotificatio
                     Log.d("SpotifyFragment", "Error removing tracks " + error.getMessage());
                 }
             });
-        }
-    }
+            Map<String, Object> savedTrackOptions = new HashMap<>();
+            savedTrackOptions.put("limit", "50");
+            spotify.getMySavedTracks(savedTrackOptions, new retrofit.Callback<Pager<SavedTrack>>() {
+                @Override
+                public void success(Pager<SavedTrack> savedTrackPager, Response response) {
+                    Log.d("SpotifyFragment", "Successfully got saved tracks");
+                    if (savedTrackPager.total > 0) {
+                        Log.d("SpotifyFragment", "Saved Tracks Returned: " + savedTrackPager.total);
+                        Log.d("SpotifyFragment", "Track added: " + tracks.get(0));
+                        Log.d("SpotifyFragment", savedTrackPager.items.get(0).track.type);
+                        Intent tracksAddedIntent = new Intent(Constants.TRACKS_ADDED);
+                        tracksAddedIntent.putExtra("song", tracks);
+                        sendBroadcast(tracksAddedIntent);
+                    }
 
-    public List<String> getTracks() {
-        return tracks;
+                }
+
+                @Override
+                public void failure(RetrofitError error) {
+                    Log.d("SpotifyFragment ", "Error getting saved Tracks: " + error.toString());
+                }
+            });
+        }
+
     }
 
     @Override

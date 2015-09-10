@@ -31,17 +31,11 @@ import java.util.Map;
 
 import kaaes.spotify.webapi.android.SpotifyService;
 
-/**
- * TODO blacklist devices with timeout
- * TODO communication between service and activity
- */
-
 public class MainActivity extends ActionBarActivity {
 
     ListView listView;
     final ArrayList<String> devicesFound = new ArrayList<>();
     ArrayAdapter<String> deviceAdapter;
-    //private Fragment chatFragment;
     public static String SONGS_PREFERENCES = "com.example.nunes.shareblue.Songs";
     SharedPreferences songsReceived;
     private static boolean DELETE = false;
@@ -57,20 +51,10 @@ public class MainActivity extends ActionBarActivity {
     private static final String REDIRECT_URL = "share-blue://callback";
     private static final int REQUEST_CODE = 1337;
 
-    /**
-     * Your API Key: E45RYODK2CMOYIYSH
-
-     Your Consumer Key: db3f3c48877bf0eb92c3ed7ffe8ed916
-
-     Your Shared Secret: zDjMFr4aQN2S0ZUUU1TrjA
-     * @param savedInstanceState
-     */
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        ///////////////
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         if (bluetoothAdapter == null) {
             Log.d("ChatService", "This device doesn't support Bluetooth");
@@ -81,28 +65,7 @@ public class MainActivity extends ActionBarActivity {
             discoverBluetooth.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 0);
             startActivityForResult(discoverBluetooth, Constants.REQUEST_DISCOVERABLE_BT);
         }
-        ///////////////
         songsReceived = this.getSharedPreferences(SONGS_PREFERENCES, MODE_PRIVATE);
-        //Intent spotifyIntent = new Intent(this, SpotifyService.class);
-        //spotifyIntent.putExtra("ACTION", "MAIN_SPOTIFY_ACTION");
-        //startService(spotifyIntent);
-        /**
-        spotifyActivity = getSupportFragmentManager().findFragmentByTag("spotify_fragment");
-        //chatFragment = getSupportFragmentManager().findFragmentByTag("chat_fragment");
-        if (spotifyActivity == null) {
-            spotifyActivity = new SpotifyActivity();
-            getSupportFragmentManager().beginTransaction().add(spotifyActivity, "spotify_fragment").commit();
-        }
-        */
-       //if (chatFragment == null) {
-       //    chatFragment= new ChatFragment();
-       //    getSupportFragmentManager().beginTransaction().add(R.id.chat_fragment, chatFragment, "chat_fragment").commit();
-       //}
-
-        // FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
-        //transaction.replace(R.id.chat_fragment, chatFragment);
-        //transaction.commit();
-
         AuthenticationRequest.Builder builder = new AuthenticationRequest.Builder(CLIENT_ID, AuthenticationResponse.Type.TOKEN, REDIRECT_URL);
         builder.setScopes(new String[]{"user-read-private", "streaming", "playlist-modify-public", "playlist-modify-private", "playlist-read-private", "user-library-read"});
         AuthenticationRequest request = builder.build();
@@ -116,8 +79,6 @@ public class MainActivity extends ActionBarActivity {
         ListView conversationView = (ListView) findViewById(R.id.in);
         conversationView.setAdapter(conversationAdapter);
         checkStorageDate();
-
-
     }
 
     @Override
@@ -182,7 +143,6 @@ public class MainActivity extends ActionBarActivity {
         Map<String, ?> songsReceivedMap = songsReceived.getAll();
         if (songsReceivedMap.size() > 1) {
             Log.d("MainActivity", "Time to delete songs: " + (Calendar.getInstance().getTimeInMillis() - (Long)songsReceivedMap.get("TIME")));
-            //43200000
             if (((Calendar.getInstance().getTimeInMillis() - (Long)songsReceivedMap.get("TIME")) > 43200000)) {
                 DELETE = true;
             }
@@ -243,7 +203,6 @@ public class MainActivity extends ActionBarActivity {
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
-        ////////////////////////
         if (resultCode == Activity.RESULT_OK) {
             //TODO need to fix 1337 thing
             if ((requestCode == Constants.REQUEST_ENABLE_BT) || (requestCode == 1337)) {
@@ -253,12 +212,7 @@ public class MainActivity extends ActionBarActivity {
 
                     Intent serviceIntent = new Intent(this, ChatService.class);
                     startService(serviceIntent);
-                    //ServerThread serverThread = new ServerThread();
-                    //s                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            erverThread.start();
-                } else {
                 }
-            }
-            if (requestCode == Constants.REQUEST_DISCOVERABLE_BT) {
             }
         }
         if (requestCode == REQUEST_CODE) {
@@ -271,18 +225,13 @@ public class MainActivity extends ActionBarActivity {
             }
 
         }
-        //////////////////////////////
-
-        //chatFragment.onActivityResult(requestCode, resultCode, intent);
-
     }
 
     public void onTracksAdded(List<String> tracks) {
-        StringBuffer tracksString = new StringBuffer();
+        StringBuilder tracksString = new StringBuilder();
         for (String track : tracks) {
-            tracksString.append("spotify:track:" + track);
+            tracksString.append("spotify:track:").append(track);
         }
-        //((ChatFragment) chatFragment).setTracks(tracksString.toString());
         chatService.setTracks(tracksString.toString());
         if (DELETE) {
             deleteStoredSongs();
